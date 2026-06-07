@@ -16,11 +16,11 @@ interface RoomBounds {
   floorBottom: number;
 }
 
-const podTone: Record<Desk["tone"], { base: string; trim: string; rug: string }> = {
-  blue: { base: "#16242d", trim: "#2d5265", rug: "#203a4b" },
-  green: { base: "#152820", trim: "#2e5945", rug: "#203f34" },
-  amber: { base: "#2c2417", trim: "#6a5529", rug: "#473a1f" },
-  mint: { base: "#18271f", trim: "#3f6143", rug: "#263d2e" },
+const podTone: Record<Desk["tone"], { surface: string; trim: string; front: string; support: string }> = {
+  blue: { surface: "#172831", trim: "#3d6577", front: "#13202a", support: "#0b1418" },
+  green: { surface: "#172a22", trim: "#3d654f", front: "#122119", support: "#0b1510" },
+  amber: { surface: "#2d2518", trim: "#765d2b", front: "#21190e", support: "#130f08" },
+  mint: { surface: "#1b2a20", trim: "#4d6f4d", front: "#152117", support: "#0c150e" },
 };
 
 function roomBounds(layout: OfficeLayout): RoomBounds {
@@ -73,19 +73,45 @@ export function drawDeskPods(
 ) {
   desks.forEach((desk) => {
     const tone = podTone[desk.tone];
-    const podWidth = layout.width > 600 ? 172 : 136;
-    const podHeight = layout.width > 600 ? 56 : 48;
-    const x = Math.round(desk.x - podWidth / 2);
-    const y = Math.round(desk.y + 21);
+    const deskWidth = layout.width > 600 ? 178 : 142;
+    const topHeight = layout.width > 600 ? 13 : 11;
+    const frontHeight = layout.width > 600 ? 43 : 36;
+    const x = Math.round(desk.x - deskWidth / 2);
+    const topY = Math.round(desk.y + 18);
+    const frontY = topY + topHeight - 2;
+    const bottomY = frontY + frontHeight;
     const pulse = desk.focused ? frame % 54 < 36 : false;
+    const chairWidth = layout.width > 600 ? 78 : 62;
+    const chairX = Math.round(desk.x - chairWidth / 2);
+    const chairY = Math.round(desk.y + 2);
+    const legWidth = layout.width > 600 ? 14 : 11;
 
-    shadow(ctx, x + 8, y + podHeight + 3, podWidth - 8, 8, 0.28);
-    pixel(ctx, x, y, podWidth, podHeight, "#11181b");
-    pixel(ctx, x + 4, y + 4, podWidth - 8, podHeight - 8, tone.base);
-    pixel(ctx, x + 9, y + 10, podWidth - 18, podHeight - 18, tone.rug);
-    strokeRect(ctx, x, y, podWidth, podHeight, pulse ? "#d8fff4" : "#33474c");
+    shadow(ctx, x + 10, bottomY + 4, deskWidth - 12, 9, 0.28);
 
-    pixel(ctx, x + 8, y + 6, podWidth - 16, 3, tone.trim);
-    withAlpha(ctx, 0.18, () => pixel(ctx, x + 12, y + podHeight - 12, podWidth - 24, 1, "#d8fff4"));
+    pixel(ctx, chairX, chairY, chairWidth, 46, "#0b1214");
+    pixel(ctx, chairX + 4, chairY + 4, chairWidth - 8, 38, "#152024");
+    strokeRect(ctx, chairX, chairY, chairWidth, 46, "#273a3f");
+    pixel(ctx, chairX + 8, chairY + 8, 5, 30, "#223238");
+    pixel(ctx, chairX + chairWidth - 13, chairY + 8, 5, 30, "#091012");
+
+    pixel(ctx, x, topY, deskWidth, topHeight, "#0a1113");
+    pixel(ctx, x + 3, topY + 2, deskWidth - 6, topHeight - 3, tone.surface);
+    pixel(ctx, x + 8, topY + 3, deskWidth - 16, 2, tone.trim);
+    strokeRect(ctx, x, topY, deskWidth, topHeight, pulse ? "#d8fff4" : "#3b4e52");
+
+    pixel(ctx, x + 7, frontY, deskWidth - 14, frontHeight, tone.front);
+    pixel(ctx, x + 12, frontY + 5, deskWidth - 24, 4, "#26383d");
+    pixel(ctx, x + 14, bottomY - 9, deskWidth - 28, 3, "#0a1113");
+    withAlpha(ctx, 0.28, () => pixel(ctx, x + 12, frontY + 13, deskWidth - 24, 1, tone.trim));
+
+    pixel(ctx, x + 16, frontY + 24, legWidth, frontHeight + 7, tone.support);
+    pixel(ctx, x + deskWidth - 16 - legWidth, frontY + 24, legWidth, frontHeight + 7, tone.support);
+    pixel(ctx, x + 11, bottomY + 8, legWidth + 10, 4, "#070d0f");
+    pixel(ctx, x + deskWidth - 21 - legWidth, bottomY + 8, legWidth + 10, 4, "#070d0f");
+
+    withAlpha(ctx, desk.hovered ? 0.24 : 0.14, () => {
+      pixel(ctx, x + 10, frontY + 11, deskWidth - 20, 1, desk.accent);
+      pixel(ctx, x + 10, bottomY - 3, deskWidth - 20, 1, "#d8fff4");
+    });
   });
 }
