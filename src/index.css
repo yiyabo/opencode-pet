@@ -1,0 +1,134 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Always-visible scrollbar */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.4); }
+
+
+/* ── Luo Xiaohei cat animations ── */
+@keyframes cat-breathe {
+  0%, 100% { transform: scaleY(1) scaleX(1); }
+  50% { transform: scaleY(1.04) scaleX(0.97); }
+}
+
+@keyframes cat-sleep {
+  0%, 100% { transform: scaleY(0.92) scaleX(1.06) translateY(4px); }
+  50% { transform: scaleY(0.96) scaleX(1.03) translateY(2px); }
+}
+
+@keyframes cat-blink {
+  0%, 90%, 100% { transform: scaleY(1); }
+  93%, 97% { transform: scaleY(0.05); }
+}
+
+@keyframes cat-blink-sleepy {
+  0%, 60%, 100% { transform: scaleY(1); }
+  65%, 90% { transform: scaleY(0.08); }
+}
+
+@keyframes cat-tail-idle {
+  0%, 100% { transform-origin: top; transform: rotate(-8deg); }
+  50% { transform-origin: top; transform: rotate(8deg); }
+}
+
+@keyframes cat-tail-work {
+  0%, 100% { transform-origin: top; transform: rotate(-18deg); }
+  50% { transform-origin: top; transform: rotate(18deg); }
+}
+
+@keyframes cat-tail-happy {
+  0%, 100% { transform-origin: top; transform: rotate(-25deg) translateY(-4px); }
+  50% { transform-origin: top; transform: rotate(25deg) translateY(-4px); }
+}
+
+@keyframes cat-ear-twitch {
+  0%, 80%, 100% { transform: rotate(0deg); }
+  85% { transform: rotate(-12deg); }
+  90% { transform: rotate(6deg); }
+}
+
+@keyframes cat-bounce {
+  0%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-10px); }
+  60% { transform: translateY(-6px); }
+}
+
+@keyframes cat-shake {
+  0%, 100% { transform: translateX(0) rotate(0deg); }
+  20% { transform: translateX(-3px) rotate(-2deg); }
+  40% { transform: translateX(3px) rotate(2deg); }
+  60% { transform: translateX(-2px) rotate(-1deg); }
+  80% { transform: translateX(2px) rotate(1deg); }
+}
+
+@keyframes cat-think {
+  0%, 100% { transform: rotate(-3deg) translateY(0); }
+  50% { transform: rotate(3deg) translateY(-2px); }
+}
+
+@keyframes cat-work-bob {
+  0%, 100% { transform: translateY(0) rotate(-2deg); }
+  50% { transform: translateY(-5px) rotate(2deg); }
+}
+
+@keyframes pupil-look {
+  0%, 40%, 100% { transform: translate(0, 0); }
+  45%, 55% { transform: translate(2px, -1px); }
+  60%, 70% { transform: translate(-2px, 0); }
+  75%, 85% { transform: translate(0, 1px); }
+}
+
+@keyframes sparkle {
+  0%, 100% { opacity: 0; transform: scale(0.5) rotate(0deg); }
+  50% { opacity: 1; transform: scale(1) rotate(180deg); }
+}
+
+@keyframes tool-dot {
+  0%, 100% { transform: translateY(0); opacity: 0.4; }
+  50% { transform: translateY(-4px); opacity: 1; }
+}
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+@keyframes panel-shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+.cat-breathe { animation: cat-breathe 3s ease-in-out infinite; }
+.cat-sleep { animation: cat-sleep 2.5s ease-in-out infinite; }
+.cat-blink { animation: cat-blink 4s ease-in-out infinite; }
+.cat-blink-sleepy { animation: cat-blink-sleepy 2s ease-in-out infinite; }
+.cat-tail-idle { animation: cat-tail-idle 2s ease-in-out infinite; }
+.cat-tail-work { animation: cat-tail-work 0.6s ease-in-out infinite; }
+.cat-tail-happy { animation: cat-tail-happy 0.5s ease-in-out infinite; }
+.cat-ear-twitch { animation: cat-ear-twitch 5s ease-in-out infinite; }
+.cat-bounce { animation: cat-bounce 0.7s ease-in-out infinite; }
+.cat-shake { animation: cat-shake 0.5s ease-in-out; }
+.cat-think { animation: cat-think 1.8s ease-in-out infinite; }
+.cat-work-bob { animation: cat-work-bob 0.8s ease-in-out infinite; }
+.pupil-look { animation: pupil-look 6s ease-in-out infinite; }
