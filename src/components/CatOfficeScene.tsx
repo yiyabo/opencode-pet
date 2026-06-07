@@ -206,7 +206,10 @@ export function CatOfficeScene({
       ref={canvasRef}
       className="absolute left-0 top-0 h-full bg-[#050b0e]"
       data-office-scene="pixel-office"
-      style={{ width: `calc(100% - ${rightInset}px)` }}
+      style={{
+        width: `calc(100% - ${rightInset}px)`,
+        transition: "width 220ms cubic-bezier(0.22, 1, 0.36, 1)",
+      }}
     />
   );
 }

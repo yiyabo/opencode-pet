@@ -788,6 +788,7 @@ export const usePetStore = create<PetStore>((set, get) => ({
       await get().fetchSessions();
       await get().fetchOpenCodeActivity();
       await get().fetchOpenCodeAttention();
+      await get().fetchAllTodos();
       return result;
     } catch (err) {
       set({ error: String(err) });

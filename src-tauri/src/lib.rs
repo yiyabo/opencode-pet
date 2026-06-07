@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::{
+    image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, LogicalSize, Manager, State,
@@ -3177,9 +3178,16 @@ async fn bind_opencode_session(
     }
 
     let server_url = state.settings.lock().unwrap().opencode_server_url.clone();
+    let server_ready = ensure_opencode_server_running(&state, &server_url).await;
     let (tui_selected, tui_detail) = if let Some(session) = selected_session.as_ref() {
-        match select_tui_session(&server_url, &session.id).await {
-            Ok(detail) => (true, detail),
+        match server_ready {
+            Ok(()) => match require_server_session(&server_url, &session.id).await {
+                Ok(_) => match select_tui_session(&server_url, &session.id).await {
+                    Ok(detail) => (true, detail),
+                    Err(err) => (false, err),
+                },
+                Err(err) => (false, err),
+            },
             Err(err) => (false, err),
         }
     } else {
@@ -3356,13 +3364,10 @@ const EMBEDDED_WEBVIEW_WIDTH: f64 = 740.0;
 #[tauri::command]
 fn open_embedded_webview(app: AppHandle, url: String, _title: String) -> Result<(), String> {
     let label = "opencode-webview";
-    
-    if let Some(existing) = app.get_webview(label) {
-        let _ = existing.close();
-    }
-    
+    let parsed_url = url
+        .parse()
+        .map_err(|err| format!("Invalid embedded OpenCode URL: {err}"))?;
     let app_clone = app.clone();
-    let url_clone = url.clone();
     
     app.run_on_main_thread(move || {
         let init_script = r#"
@@ -3370,9 +3375,13 @@ fn open_embedded_webview(app: AppHandle, url: String, _title: String) -> Result<
                 localStorage.setItem('opencode-color-scheme', 'dark');
             } catch(e) {}
         "#;
+
+        if let Some(existing) = app_clone.get_webview(label) {
+            let _ = existing.close();
+        }
         
         if let Some(window) = app_clone.get_window("main") {
-            let webview_builder = tauri::WebviewBuilder::new(label, tauri::WebviewUrl::External(url_clone.parse().expect("valid URL")))
+            let webview_builder = tauri::WebviewBuilder::new(label, tauri::WebviewUrl::External(parsed_url))
                 .initialization_script(init_script);
             
             let webview = window.add_child(webview_builder, tauri::LogicalPosition::new(EMBEDDED_WEBVIEW_WIDTH, 0.0), tauri::LogicalSize::new(EMBEDDED_WEBVIEW_WIDTH, 820.0));
@@ -3390,10 +3399,13 @@ fn open_embedded_webview(app: AppHandle, url: String, _title: String) -> Result<
 #[tauri::command]
 fn close_embedded_webview(app: AppHandle) -> Result<(), String> {
     let label = "opencode-webview";
-    if let Some(webview) = app.get_webview(label) {
-        let _ = webview.close();
-    }
-    Ok(())
+    let app_clone = app.clone();
+    app.run_on_main_thread(move || {
+        if let Some(webview) = app_clone.get_webview(label) {
+            let _ = webview.close();
+        }
+    })
+    .map_err(|e| format!("Failed to close embedded webview: {e}"))
 }
 
 #[tauri::command]
@@ -3526,9 +3538,11 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
     let menu = Menu::with_items(app, &[&show_i, &hide_i, &settings_i, &quit_i])?;
+    let tray_icon = Image::new(include_bytes!("../icons/tray-template.rgba"), 32, 32);
 
     let _tray = TrayIconBuilder::new()
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(tray_icon)
+        .icon_as_template(true)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
@@ -3587,6 +3601,24 @@ fn hide_window(app: AppHandle) {
     }
 }
 
+fn recenter_office_window(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.center();
+        let _ = window.set_focus();
+    }
+
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(80));
+        let app_for_main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(window) = app_for_main.get_webview_window("main") {
+                let _ = window.center();
+                let _ = window.set_focus();
+            }
+        });
+    });
+}
+
 #[tauri::command]
 fn set_window_mode(mode: String, app: AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -3600,6 +3632,9 @@ fn set_window_mode(mode: String, app: AppHandle) {
         let _ = window.set_size(size);
         let resizable = mode == "chat" || mode == "office";
         let _ = window.set_resizable(resizable);
+        if mode == "office" {
+            recenter_office_window(app);
+        }
     }
 }
 
@@ -3890,7 +3925,13 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
-                monitor::start_monitor(app_handle, watched_paths);
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    monitor::start_monitor(app_handle, watched_paths);
+                }))
+                .is_err()
+                {
+                    eprintln!("OpenCode database monitor stopped after a watcher panic");
+                }
             });
 
             opencode_stream::start(app.handle().clone());

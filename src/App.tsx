@@ -25,6 +25,7 @@ function App() {
     startListening,
     fetchPetConfigs,
     refreshOfficeState,
+    bindSession,
     fetchSettings,
     findDatabases,
     setDatabasePath,
@@ -54,9 +55,14 @@ function App() {
     void invoke("set_window_mode", { mode });
   }, [showPanel, showSettings]);
 
-  const openPanel = async () => {
+  const openPanel = () => {
+    if (isTauriRuntime()) {
+      void invoke("set_window_mode", { mode: "office" });
+    }
     setShowPanel(true);
-    await refreshOfficeState("open-office");
+    window.setTimeout(() => {
+      void refreshOfficeState("open-office");
+    }, 0);
   };
 
   const openSettings = (focus?: "database" | "server") => {
@@ -89,7 +95,7 @@ function App() {
           petState={petState}
           lastEvent={lastEvent}
           isChatOpen={showPanel}
-          onClick={() => void openPanel()}
+          onClick={openPanel}
         />
 
         {/* Hover micro-controls */}
@@ -132,6 +138,7 @@ function App() {
         sessionTodos={sessionTodos}
         onClose={() => setShowPanel(false)}
         onRefreshOfficeState={refreshOfficeState}
+        onBindSession={bindSession}
         onOpenSettings={openSettings}
       />
 
