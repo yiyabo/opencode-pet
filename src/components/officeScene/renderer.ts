@@ -489,7 +489,7 @@ export function renderOfficeScene({
   ctx.clearRect(0, 0, layout.width, CANVAS_HEIGHT);
   drawShell(ctx, layout);
   drawWindows(ctx, frame, layout);
-  drawRoomStructure(ctx, layout, frame);
+  drawRoomStructure(ctx, layout);
   drawDeskPods(ctx, liveDesks, layout, frame);
   liveDesks.forEach((desk) => drawWorkstation(ctx, desk, frame, sprites));
   liveDesks.forEach((desk) => {
