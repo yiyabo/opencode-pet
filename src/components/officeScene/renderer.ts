@@ -10,6 +10,7 @@ import {
 } from "./canvasPrimitives";
 import { CANVAS_HEIGHT, PIXEL_ALERT, officeLayout } from "./layout";
 import { activityDesks, visibleSessionCount } from "./model";
+import { drawDeskPods, drawRoomStructure } from "./room";
 import { compactCanvasText } from "./text";
 import type {
   CatSpritePose,
@@ -488,6 +489,8 @@ export function renderOfficeScene({
   ctx.clearRect(0, 0, layout.width, CANVAS_HEIGHT);
   drawShell(ctx, layout);
   drawWindows(ctx, frame, layout);
+  drawRoomStructure(ctx, layout, frame);
+  drawDeskPods(ctx, liveDesks, layout, frame);
   liveDesks.forEach((desk) => drawWorkstation(ctx, desk, frame, sprites));
   liveDesks.forEach((desk) => {
     if (desk.sessionId && sessionTodos[desk.sessionId]?.length) {
