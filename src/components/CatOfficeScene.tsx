@@ -58,6 +58,12 @@ interface HitBox {
   height: number;
 }
 
+interface CanvasTransform {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+}
+
 interface Desk {
   x: number;
   y: number;
@@ -95,27 +101,55 @@ interface Desk {
 
 type CatCoat = "tuxedo" | "orange" | "calico" | "gray";
 
-const FULL_CANVAS_WIDTH = 840;
-const DOCKED_CANVAS_WIDTH = 420;
 const CANVAS_HEIGHT = 500;
 const PIXEL_ALERT = "#e8755f";
 
-const fullDesks: Desk[] = [
-  { x: 200, y: 150, label: "frontend", accent: "#65b7ff", tone: "blue", worker: "tuxedo" },
-  { x: 560, y: 150, label: "core", accent: "#55d69e", tone: "green", worker: "orange" },
-  { x: 200, y: 350, label: "tests", accent: "#a7e56f", tone: "mint", worker: "calico" },
-  { x: 560, y: 350, label: "review", accent: "#ffd166", tone: "amber", worker: "gray" },
-];
+interface OfficeLayout {
+  width: number;
+  title: string;
+  footer: string;
+  shellX: number;
+  windowXs: number[];
+  windowWidth: number;
+  noiseMarks: number;
+  desks: Desk[];
+}
 
-const dockedDesks: Desk[] = [
-  { x: 125, y: 148, label: "frontend", accent: "#65b7ff", tone: "blue", worker: "tuxedo" },
-  { x: 295, y: 148, label: "core", accent: "#55d69e", tone: "green", worker: "orange" },
-  { x: 125, y: 350, label: "tests", accent: "#a7e56f", tone: "mint", worker: "calico" },
-  { x: 295, y: 350, label: "review", accent: "#ffd166", tone: "amber", worker: "gray" },
-];
+const officeLayouts: Record<"full" | "dock", OfficeLayout> = {
+  full: {
+    width: 840,
+    title: "OPEN  CODE  NIGHT  SHIFT",
+    footer: "CLICK A DESK",
+    shellX: 38,
+    windowXs: [88, 182, 276, 370, 464, 558, 652, 746],
+    windowWidth: 72,
+    noiseMarks: 34,
+    desks: [
+      { x: 200, y: 150, label: "frontend", accent: "#65b7ff", tone: "blue", worker: "tuxedo" },
+      { x: 560, y: 150, label: "core", accent: "#55d69e", tone: "green", worker: "orange" },
+      { x: 200, y: 350, label: "tests", accent: "#a7e56f", tone: "mint", worker: "calico" },
+      { x: 560, y: 350, label: "review", accent: "#ffd166", tone: "amber", worker: "gray" },
+    ],
+  },
+  dock: {
+    width: 420,
+    title: "OPEN  CODE  DOCK",
+    footer: "WEB DOCK: DESKS STAY LIVE",
+    shellX: 20,
+    windowXs: [44, 126, 208, 290],
+    windowWidth: 64,
+    noiseMarks: 18,
+    desks: [
+      { x: 125, y: 148, label: "frontend", accent: "#65b7ff", tone: "blue", worker: "tuxedo" },
+      { x: 295, y: 148, label: "core", accent: "#55d69e", tone: "green", worker: "orange" },
+      { x: 125, y: 350, label: "tests", accent: "#a7e56f", tone: "mint", worker: "calico" },
+      { x: 295, y: 350, label: "review", accent: "#ffd166", tone: "amber", worker: "gray" },
+    ],
+  },
+};
 
-function sceneWidth(isWebviewOpen: boolean): number {
-  return isWebviewOpen ? DOCKED_CANVAS_WIDTH : FULL_CANVAS_WIDTH;
+function officeLayout(isWebviewOpen: boolean): OfficeLayout {
+  return isWebviewOpen ? officeLayouts.dock : officeLayouts.full;
 }
 
 function compactDeskLabel(value: string): string {
@@ -246,19 +280,40 @@ function attentionForSession(
   return attentionItems.find((item) => item.session_id === sessionId);
 }
 
+function orderedSessionLinks(sessionLinks: OpenCodeSessionLink[] = []): OpenCodeSessionLink[] {
+  const orderedLinks = [
+    ...sessionLinks.filter((link) => link.is_bound || link.is_current),
+    ...sessionLinks.filter((link) => !link.is_bound && !link.is_current),
+  ];
+  return orderedLinks.filter(
+    (link, index, items) => items.findIndex((item) => item.id === link.id) === index,
+  );
+}
+
+function orderedActivityItems(activityItems: OpenCodeActivityItem[] = []): OpenCodeActivityItem[] {
+  const orderedItems = [
+    ...activityItems.filter((item) => item.is_bound || item.is_current),
+    ...activityItems.filter((item) => !item.is_bound && !item.is_current),
+  ];
+  return orderedItems.filter(
+    (item, index, items) => items.findIndex((candidate) => candidate.id === item.id) === index,
+  );
+}
+
+function visibleSessionCount(
+  activityItems: OpenCodeActivityItem[] = [],
+  sessionLinks: OpenCodeSessionLink[] = [],
+): number {
+  return activityItems.length > 0 ? orderedActivityItems(activityItems).length : orderedSessionLinks(sessionLinks).length;
+}
+
 function sessionDesks(
   baseDesks: Desk[],
   sessionLinks: OpenCodeSessionLink[] = [],
   focusedSessionId?: string | null,
   attentionItems: OpenCodeAttentionItem[] = [],
 ): Desk[] {
-  const orderedLinks = [
-    ...sessionLinks.filter((link) => link.is_bound || link.is_current),
-    ...sessionLinks.filter((link) => !link.is_bound && !link.is_current),
-  ];
-  const uniqueLinks = orderedLinks.filter(
-    (link, index, items) => items.findIndex((item) => item.id === link.id) === index,
-  );
+  const uniqueLinks = orderedSessionLinks(sessionLinks);
 
   return baseDesks.map((desk, index) => {
     const link = uniqueLinks[index];
@@ -296,13 +351,7 @@ function activityDesks(
   attentionItems: OpenCodeAttentionItem[] = [],
 ): Desk[] {
   if (activityItems.length === 0) return sessionDesks(baseDesks, fallbackLinks, focusedSessionId, attentionItems);
-  const orderedItems = [
-    ...activityItems.filter((item) => item.is_bound || item.is_current),
-    ...activityItems.filter((item) => !item.is_bound && !item.is_current),
-  ];
-  const uniqueItems = orderedItems.filter(
-    (item, index, items) => items.findIndex((candidate) => candidate.id === item.id) === index,
-  );
+  const uniqueItems = orderedActivityItems(activityItems);
 
   return baseDesks.map((desk, index) => {
     const item = uniqueItems[index];
@@ -504,7 +553,7 @@ function drawCityLights(ctx: CanvasRenderingContext2D, x: number, index: number,
   }
 }
 
-function drawPixelNoise(ctx: CanvasRenderingContext2D, widthLimit: number, innerX: number, innerWidth: number) {
+function drawPixelNoise(ctx: CanvasRenderingContext2D, layout: OfficeLayout, innerX: number, innerWidth: number) {
   withAlpha(ctx, 0.13, () => {
     for (let y = 72; y < 468; y += 8) {
       for (let x = innerX + 3; x < innerX + innerWidth - 8; x += 8) {
@@ -515,8 +564,7 @@ function drawPixelNoise(ctx: CanvasRenderingContext2D, widthLimit: number, inner
     }
   });
   withAlpha(ctx, 0.08, () => {
-    const markCount = widthLimit < 600 ? 18 : 34;
-    for (let index = 0; index < markCount; index += 1) {
+    for (let index = 0; index < layout.noiseMarks; index += 1) {
       const x = innerX + 12 + ((index * 131) % Math.max(1, innerWidth - 48));
       const y = 94 + ((index * 73) % 350);
       pixel(ctx, x, y, 5 + (index % 3) * 2, 1, "#536368");
@@ -525,14 +573,14 @@ function drawPixelNoise(ctx: CanvasRenderingContext2D, widthLimit: number, inner
   });
 }
 
-function drawShell(ctx: CanvasRenderingContext2D, widthLimit: number) {
-  const shellX = widthLimit < 600 ? 20 : 38;
-  const shellW = widthLimit - shellX * 2;
+function drawShell(ctx: CanvasRenderingContext2D, layout: OfficeLayout) {
+  const shellX = layout.shellX;
+  const shellW = layout.width - shellX * 2;
   const innerX = shellX + 17;
-  const innerW = widthLimit - innerX * 2;
+  const innerW = layout.width - innerX * 2;
   const rightWallX = innerX + innerW;
 
-  pixel(ctx, 0, 0, widthLimit, CANVAS_HEIGHT, "#050b0e");
+  pixel(ctx, 0, 0, layout.width, CANVAS_HEIGHT, "#050b0e");
   pixel(ctx, shellX, 16, shellW, 460, "#111a1d");
   pixel(ctx, innerX, 77, innerW, 386, "#1c282c");
 
@@ -554,15 +602,12 @@ function drawShell(ctx: CanvasRenderingContext2D, widthLimit: number) {
     if ((x / 18) % 4 === 0) line(ctx, x + 1, 76, x + 1, 463, "#26363b");
   }
 
-  drawPixelNoise(ctx, widthLimit, innerX, innerW);
+  drawPixelNoise(ctx, layout, innerX, innerW);
 }
 
-function drawWindows(ctx: CanvasRenderingContext2D, frame: number, widthLimit: number) {
-  const windows = widthLimit < 600
-    ? [44, 126, 208, 290]
-    : [88, 182, 276, 370, 464, 558, 652, 746];
-  windows.forEach((x, index) => {
-    const windowWidth = widthLimit < 600 ? 64 : 72;
+function drawWindows(ctx: CanvasRenderingContext2D, frame: number, layout: OfficeLayout) {
+  layout.windowXs.forEach((x, index) => {
+    const windowWidth = layout.windowWidth;
     pixel(ctx, x, 4, windowWidth, 58, "#080f12");
     pixel(ctx, x + 7, 9, windowWidth - 14, 19, "#314858");
     pixel(ctx, x + 7, 35, windowWidth - 14, 20, "#243945");
@@ -572,10 +617,19 @@ function drawWindows(ctx: CanvasRenderingContext2D, frame: number, widthLimit: n
     withAlpha(ctx, 0.2, () => line(ctx, x + 10, 11, x + windowWidth - 10, 48, "#c9f7ff"));
   });
 
-  const title = widthLimit < 600 ? "OPEN  CODE  DOCK" : "OPEN  CODE  NIGHT  SHIFT";
-  const titleX = Math.round(widthLimit / 2 - (title.length * 5) / 2);
-  text(ctx, title, titleX, 30, "#d7efe8", 8);
-  withAlpha(ctx, 0.38, () => pixel(ctx, titleX - 7, 43, title.length * 5 + 14, 2, "#55d69e"));
+  const titleX = Math.round(layout.width / 2 - (layout.title.length * 5) / 2);
+  text(ctx, layout.title, titleX, 30, "#d7efe8", 8);
+  withAlpha(ctx, 0.38, () => pixel(ctx, titleX - 7, 43, layout.title.length * 5 + 14, 2, "#55d69e"));
+}
+
+function activeTodos(todos: TodoItem[]): TodoItem[] {
+  return todos.filter((todo) => todo.status !== "completed" && todo.status !== "cancelled");
+}
+
+function todoEmptyLabel(todos: TodoItem[], completed: number): string {
+  if (todos.length === 0) return "NO TODO";
+  if (completed === todos.length) return "ALL DONE";
+  return "NO ACTIVE";
 }
 
 function drawTodoBubble(
@@ -587,15 +641,15 @@ function drawTodoBubble(
   if (todos.length === 0) return;
 
   const completed = todos.filter((t) => t.status === "completed").length;
-  const inProgress = todos.filter((t) => t.status === "in_progress").length;
-  const visible = todos.filter((t) => t.status !== "completed").slice(0, 3);
+  const active = activeTodos(todos);
+  const visible = active.slice(0, 3);
   const progressLabel = `${completed}/${todos.length}`;
 
   const lineHeight = 11;
   const headerHeight = 14;
   const padding = 6;
   const bubbleWidth = 100;
-  const contentLines = visible.length + 1;
+  const contentLines = Math.max(1, visible.length) + 1;
   const bubbleHeight = headerHeight + contentLines * lineHeight + padding * 2;
   const preferRight = desk.x + 50 + bubbleWidth <= widthLimit - 8;
   const bubbleX = Math.round(preferRight ? desk.x + 50 : desk.x - 50 - bubbleWidth);
@@ -621,17 +675,22 @@ function drawTodoBubble(
   }
 
   let lineY = barY + barHeight + 4;
-  for (const todo of visible) {
-    const icon = todo.status === "in_progress" ? ">" : todo.status === "cancelled" ? "x" : "[ ]";
-    const color = todo.status === "in_progress" ? "#ffd166" : "#9fb4b8";
-    const label = compactCanvasText(todo.content, 14);
-    text(ctx, icon, bubbleX + 8, lineY, color, 7);
-    text(ctx, label, bubbleX + 20, lineY, color, 7);
+  if (visible.length === 0) {
+    text(ctx, todoEmptyLabel(todos, completed), bubbleX + 8, lineY, completed === todos.length ? "#55d69e" : "#9fb4b8", 7);
     lineY += lineHeight;
+  } else {
+    for (const todo of visible) {
+      const icon = todo.status === "in_progress" ? ">" : "[ ]";
+      const color = todo.status === "in_progress" ? "#ffd166" : "#9fb4b8";
+      const label = compactCanvasText(todo.content, 14);
+      text(ctx, icon, bubbleX + 8, lineY, color, 7);
+      text(ctx, label, bubbleX + 20, lineY, color, 7);
+      lineY += lineHeight;
+    }
   }
 
-  if (todos.length - completed - inProgress > visible.length) {
-    const remaining = todos.length - completed - visible.length;
+  const remaining = Math.max(0, active.length - visible.length);
+  if (remaining > 0) {
     text(ctx, `+${remaining} more...`, bubbleX + 8, lineY, "#6d7d82", 6);
   }
 
@@ -650,11 +709,11 @@ function drawDockedTodoCard(
   if (todos.length === 0) return;
 
   const completed = todos.filter((t) => t.status === "completed").length;
-  const activeTodo = todos.find((t) => t.status === "in_progress")
-    ?? todos.find((t) => t.status !== "completed");
+  const active = activeTodos(todos);
+  const activeTodo = active.find((t) => t.status === "in_progress") ?? active[0];
   const progressLabel = `${completed}/${todos.length}`;
   const cardWidth = 112;
-  const cardHeight = activeTodo ? 34 : 24;
+  const cardHeight = activeTodo ? 34 : 29;
   const cardX = Math.round(desk.x - cardWidth / 2);
   const cardY = Math.round(Math.min(desk.y + 63, CANVAS_HEIGHT - cardHeight - 16));
 
@@ -680,6 +739,8 @@ function drawDockedTodoCard(
     const color = activeTodo.status === "in_progress" ? "#ffd166" : "#9fb4b8";
     text(ctx, icon, cardX + 7, cardY + 23, color, 6);
     text(ctx, compactCanvasText(activeTodo.content, 13), cardX + 20, cardY + 23, color, 6);
+  } else {
+    text(ctx, todoEmptyLabel(todos, completed), cardX + 7, cardY + 22, completed === todos.length ? "#55d69e" : "#9fb4b8", 6);
   }
 }
 
@@ -692,13 +753,36 @@ function drawDeskNameplate(ctx: CanvasRenderingContext2D, desk: Desk) {
   const w = Math.max(72, label.length * 6 + 30);
   const x = Math.round(desk.x - w / 2);
   const y = desk.y + 44;
+  const borderColor = desk.focused ? "#d8fff4" : desk.hovered ? "#d8fff4" : "#33474c";
   shadow(ctx, x + 3, y + 15, w, 4, 0.25);
   pixel(ctx, x, y, w, 15, "#0b1416");
   pixel(ctx, x + 1, y + 1, w - 2, 13, "#162326");
-  strokeRect(ctx, x, y, w, 15, desk.hovered ? "#d8fff4" : "#33474c");
+  strokeRect(ctx, x, y, w, 15, borderColor);
   pixel(ctx, x + 5, y + 5, 5, 5, dotColor);          // link 状态点
   text(ctx, label, x + 13, y + 4, "#d8fff4", 6);     // session 名
   text(ctx, linkText, x + w - linkText.length * 4 - 5, y + 5, dotColor, 5); // link 状态词
+}
+
+function drawFallbackCat(ctx: CanvasRenderingContext2D, desk: Desk, state: "idle" | "work" | "sleep", bob: number) {
+  const x = Math.round(desk.x);
+  const y = Math.round(desk.y + bob);
+  const coat = desk.worker === "orange" ? "#d8874d"
+    : desk.worker === "calico" ? "#f0d8b5"
+    : desk.worker === "gray" ? "#9fa7aa"
+    : "#15191d";
+  const shade = desk.worker === "tuxedo" ? "#f2f2e8" : "#273238";
+  const eye = state === "sleep" ? "#5c7177" : "#91ffbc";
+
+  pixel(ctx, x - 23, y - 16, 46, 32, "#070b0d");
+  pixel(ctx, x - 17, y - 24, 10, 10, "#070b0d");
+  pixel(ctx, x + 7, y - 24, 10, 10, "#070b0d");
+  pixel(ctx, x - 20, y - 13, 40, 27, coat);
+  pixel(ctx, x - 13, y + 1, 26, 13, shade);
+  pixel(ctx, x - 12, y - 6, 4, 3, eye);
+  pixel(ctx, x + 8, y - 6, 4, 3, eye);
+  pixel(ctx, x - 2, y - 1, 4, 3, "#eaa0ad");
+  if (state === "work") pixel(ctx, x + 21, y - 7, 13, 5, desk.accent);
+  if (state === "sleep") text(ctx, "z", x + 24, y - 27, "#8ecaff", 6);
 }
 
 function drawWorkstation(ctx: CanvasRenderingContext2D, desk: Desk, frame: number, sprites: Record<string, HTMLImageElement>) {
@@ -716,6 +800,8 @@ function drawWorkstation(ctx: CanvasRenderingContext2D, desk: Desk, frame: numbe
   if (img && img.complete && img.naturalWidth > 0) {
     ctx.imageSmoothingEnabled = false; // 保持像素硬边
     ctx.drawImage(img, Math.round(desk.x - S / 2), Math.round(desk.y - S / 2 + bob), S, S);
+  } else {
+    drawFallbackCat(ctx, desk, state, bob);
   }
   // 名牌（session 名 + link 状态），仅非空工位
   if (desk.sessionId && !isEmpty) drawDeskNameplate(ctx, desk);
@@ -741,11 +827,55 @@ function drawHoverTooltip(
   drawPixelTooltip(ctx, tooltipX, tooltipY, deskHoverLines(desk), desk.accent, frame, widthLimit);
 }
 
+function officeIssueLabel(workspaceState: OpenCodeWorkspaceState | null): string | null {
+  if (!workspaceState) return null;
+  if (!workspaceState.database_valid) {
+    return workspaceState.database_status === "missing" ? "DATABASE MISSING" : "DATABASE CHECK";
+  }
+  if (!workspaceState.server_online) return "SERVER OFFLINE";
+  return null;
+}
+
+function drawOfficeHint(
+  ctx: CanvasRenderingContext2D,
+  layout: OfficeLayout,
+  liveDesks: Desk[],
+  workspaceState: OpenCodeWorkspaceState | null,
+) {
+  const issue = officeIssueLabel(workspaceState);
+  const empty = liveDesks.every((desk) => !desk.sessionId);
+  if (!issue && !empty) return;
+
+  const label = issue ?? "NO ACTIVE SESSIONS";
+  const detail = issue ? "CHECK SETTINGS" : "REFRESH OFFICE";
+  const width = Math.max(118, label.length * 6 + 18);
+  const x = Math.round(layout.width / 2 - width / 2);
+  const y = 236;
+
+  shadow(ctx, x + 4, y + 31, width, 6, 0.2);
+  pixel(ctx, x, y, width, 32, "#0a1416");
+  pixel(ctx, x + 2, y + 2, width - 4, 28, "#162326");
+  strokeRect(ctx, x, y, width, 32, issue ? PIXEL_ALERT : "#33474c");
+  text(ctx, label, x + 9, y + 7, issue ? "#ffb49f" : "#d8fff4", 7);
+  text(ctx, detail, x + 9, y + 19, "#6f8c96", 6);
+}
+
+function drawOfficeFooter(ctx: CanvasRenderingContext2D, layout: OfficeLayout, overflowCount: number) {
+  pixel(ctx, 12, 488, 4, 4, "#55d69e");
+  text(ctx, layout.footer, 20, 489, "#6f8c96", 6);
+  if (overflowCount > 0) {
+    const label = `+${overflowCount} MORE`;
+    const x = Math.max(20, layout.width - label.length * 5 - 18);
+    text(ctx, label, x, 489, "#ffd166", 6);
+  }
+}
+
 function drawScene(
   ctx: CanvasRenderingContext2D,
   sessionLinks: OpenCodeSessionLink[],
   activityItems: OpenCodeActivityItem[],
   attentionItems: OpenCodeAttentionItem[],
+  workspaceState: OpenCodeWorkspaceState | null,
   focusedSessionId: string | null,
   frame: number,
   hoverHit: HitBox | null,
@@ -754,24 +884,26 @@ function drawScene(
   isWebviewOpen: boolean,
 ): HitBox[] {
   const hoverSessionId = hoverHit?.kind === "session" ? hoverHit.id : null;
-  const widthLimit = sceneWidth(isWebviewOpen);
-  const liveDesks = activityDesks(isWebviewOpen ? dockedDesks : fullDesks, activityItems, sessionLinks, focusedSessionId, attentionItems).map((desk) => ({
+  const layout = officeLayout(isWebviewOpen);
+  const liveDesks = activityDesks(layout.desks, activityItems, sessionLinks, focusedSessionId, attentionItems).map((desk) => ({
     ...desk,
     hovered: Boolean(desk.sessionId && desk.sessionId === hoverSessionId),
   }));
-  ctx.clearRect(0, 0, widthLimit, CANVAS_HEIGHT);
-  drawShell(ctx, widthLimit);
-  drawWindows(ctx, frame, widthLimit);
+  const overflowCount = Math.max(0, visibleSessionCount(activityItems, sessionLinks) - layout.desks.length);
+  ctx.clearRect(0, 0, layout.width, CANVAS_HEIGHT);
+  drawShell(ctx, layout);
+  drawWindows(ctx, frame, layout);
   liveDesks.forEach((desk) => drawWorkstation(ctx, desk, frame, sprites));
   liveDesks.forEach((desk) => {
     if (desk.sessionId && sessionTodos[desk.sessionId]?.length) {
       if (isWebviewOpen) {
         drawDockedTodoCard(ctx, desk, sessionTodos[desk.sessionId]);
       } else {
-        drawTodoBubble(ctx, desk, sessionTodos[desk.sessionId], widthLimit);
+        drawTodoBubble(ctx, desk, sessionTodos[desk.sessionId], layout.width);
       }
     }
   });
+  drawOfficeHint(ctx, layout, liveDesks, workspaceState);
   const deskHitBoxes = liveDesks
     .map((desk) => workstationHitBox(desk))
     .filter((box): box is HitBox => Boolean(box));
@@ -785,10 +917,9 @@ function drawScene(
       hitBoxes.forEach((box) => strokeRect(ctx, box.x - 1, box.y - 1, box.width + 2, box.height + 2, "#55d69e"));
     });
   }
-  pixel(ctx, 12, 488, 4, 4, "#55d69e");
-  text(ctx, isWebviewOpen ? "WEB DOCK: DESKS STAY LIVE" : "CLICK A DESK", 20, 489, "#6f8c96", 6);
+  drawOfficeFooter(ctx, layout, overflowCount);
   if (!isWebviewOpen) {
-    drawHoverTooltip(ctx, liveDesks, hoverHit, frame, widthLimit);
+    drawHoverTooltip(ctx, liveDesks, hoverHit, frame, layout.width);
   }
   return hitBoxes;
 }
@@ -830,6 +961,11 @@ export function CatOfficeScene({
   const hitBoxesRef = useRef<HitBox[]>([]);
   const hoverHitRef = useRef<HitBox | null>(null);
   const spritesRef = useRef<Record<string, HTMLImageElement>>({});
+  const canvasTransformRef = useRef<CanvasTransform>({
+    scale: 1,
+    offsetX: 0,
+    offsetY: 0,
+  });
 
   useEffect(() => {
     const coats = ["tuxedo", "orange", "calico", "gray"];
@@ -881,12 +1017,13 @@ export function CatOfficeScene({
         canvas.width = targetWidth;
         canvas.height = targetHeight;
       }
-      const currentSceneWidth = sceneWidth(isWebviewOpenRef.current);
+      const currentSceneWidth = officeLayout(isWebviewOpenRef.current).width;
       const scaleX = targetWidth / currentSceneWidth;
       const scaleY = targetHeight / CANVAS_HEIGHT;
       const scale = Math.min(scaleX, scaleY);
       const offsetX = (targetWidth - currentSceneWidth * scale) / 2;
       const offsetY = (targetHeight - CANVAS_HEIGHT * scale) / 2;
+      canvasTransformRef.current = { scale, offsetX, offsetY };
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.translate(offsetX, offsetY);
       ctx.scale(scale, scale);
@@ -904,6 +1041,7 @@ export function CatOfficeScene({
         sessionLinksRef.current,
         activityItemsRef.current,
         attentionItemsRef.current,
+        workspaceStateRef.current,
         focusedSessionRef.current,
         frame,
         hoverHitRef.current,
@@ -916,10 +1054,12 @@ export function CatOfficeScene({
 
     const canvasPointFromEvent = (event: PointerEvent) => {
       const rect = canvas.getBoundingClientRect();
-      const currentSceneWidth = sceneWidth(isWebviewOpenRef.current);
+      const transform = canvasTransformRef.current;
+      const pixelX = (event.clientX - rect.left) * (canvas.width / Math.max(1, rect.width));
+      const pixelY = (event.clientY - rect.top) * (canvas.height / Math.max(1, rect.height));
       return {
-        x: ((event.clientX - rect.left) / rect.width) * currentSceneWidth,
-        y: ((event.clientY - rect.top) / rect.height) * CANVAS_HEIGHT,
+        x: (pixelX - transform.offsetX) / Math.max(0.01, transform.scale),
+        y: (pixelY - transform.offsetY) / Math.max(0.01, transform.scale),
       };
     };
 
