@@ -18,9 +18,9 @@ export function SettingsPanel({ isOpen, onClose, initialFocus, currentDatabasePa
   const [isApplying, setIsApplying] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const selectedDbIsCurrent = Boolean(selectedDb && currentDatabasePath && selectedDb === currentDatabasePath);
-  
+
   const { findDatabases, setDatabasePath, fetchSettings, updateSettings, settings } = usePetStore();
-  
+
   useEffect(() => {
     if (isOpen) {
       loadDatabases();
@@ -34,7 +34,7 @@ export function SettingsPanel({ isOpen, onClose, initialFocus, currentDatabasePa
       setSettingsError(null);
     }
   }, [isOpen, settings.opencode_server_url]);
-  
+
   const loadDatabases = async () => {
     setIsLoading(true);
     setSettingsError(null);
@@ -56,7 +56,7 @@ export function SettingsPanel({ isOpen, onClose, initialFocus, currentDatabasePa
       setIsLoading(false);
     }
   };
-  
+
   const handleApply = async () => {
     setSettingsError(null);
     setIsApplying(true);
@@ -87,12 +87,12 @@ export function SettingsPanel({ isOpen, onClose, initialFocus, currentDatabasePa
     if (event.button !== 0) return;
     await getCurrentWindow().startDragging();
   };
-  
+
   return (
     <AnimatePresence>
       {isOpen && (
         <motion.div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-sm"
           data-no-drag
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -100,51 +100,54 @@ export function SettingsPanel({ isOpen, onClose, initialFocus, currentDatabasePa
           onClick={onClose}
         >
           <motion.div
-            className="bg-gray-900/95 backdrop-blur-md rounded-2xl shadow-2xl w-[90%] max-w-md overflow-hidden"
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.9, opacity: 0 }}
+            className="w-[90%] max-w-md overflow-hidden rounded-xl border border-[#89b9c3]/18 bg-[#071012] text-white shadow-[0_24px_80px_rgba(0,0,0,0.74)]"
+            initial={{ scale: 0.96, opacity: 0, y: 12 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.96, opacity: 0, y: 12 }}
+            transition={{ type: "spring", stiffness: 260, damping: 28 }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between p-4 border-b border-gray-700">
-              <h2 className="text-lg font-bold text-white">Settings</h2>
+            <div className="flex items-center justify-between border-b border-[#89b9c3]/14 bg-gradient-to-b from-black/40 to-transparent px-5 py-3.5">
+              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/60">Settings</p>
               <div className="flex items-center gap-2" data-no-drag>
                 <button
                   type="button"
                   onPointerDown={(event) => void startWindowDrag(event)}
-                  className="rounded-full border border-gray-600 bg-gray-800/80 px-2 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-gray-200 transition-colors hover:border-cyan-300/40 hover:text-white"
+                  className="flex h-7 items-center gap-1.5 rounded-md border border-[#9fd7df]/25 bg-[#071012]/80 px-2.5 text-[10px] font-black uppercase tracking-[0.16em] text-[#9fb4b8] transition-colors hover:border-[#33d1a0]/45 hover:text-white"
                 >
                   ⠿ Drag
                 </button>
                 <button
+                  type="button"
                   onClick={onClose}
-                  className="p-1 hover:bg-gray-700 rounded-lg transition-colors"
+                  className="flex h-7 w-7 items-center justify-center rounded-md border border-[#9fd7df]/25 bg-[#071012]/80 text-[#d7efe8] transition-colors hover:border-[#9fd7df]/45 hover:bg-[#d7efe8]/10 hover:text-white"
+                  title="Close"
                 >
-                  <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>
               </div>
             </div>
-            
-            <div className="p-4 space-y-4">
+
+            <div className="space-y-4 p-5">
               {settingsError && (
-                <div className="rounded-lg border border-red-400/25 bg-red-400/[0.08] px-3 py-2 text-xs font-semibold leading-5 text-red-100">
+                <div className="rounded-lg border border-[#e8755f]/30 bg-[#e8755f]/[0.1] px-3 py-2 text-xs font-semibold leading-5 text-[#f4c4b8]">
                   {settingsError}
                 </div>
               )}
               {isApplying && (
-                <div className="rounded-lg border border-cyan-300/24 bg-cyan-300/[0.07] px-3 py-2 text-xs font-semibold leading-5 text-cyan-100">
+                <div className="rounded-lg border border-[#33d1a0]/24 bg-[#33d1a0]/[0.08] px-3 py-2 text-xs font-semibold leading-5 text-[#bfeede]">
                   Applying settings and refreshing the OpenCode office route...
                 </div>
               )}
-              <div className={initialFocus === "server" ? "rounded-xl border border-cyan-300/30 bg-cyan-300/[0.055] p-3 shadow-[0_0_24px_rgba(103,232,249,0.08)]" : ""}>
+              <div className={initialFocus === "server" ? "rounded-xl border border-[#33d1a0]/30 bg-[#33d1a0]/[0.055] p-3 shadow-[0_0_24px_rgba(51,209,160,0.08)]" : ""}>
                 <div className="mb-2 flex items-center justify-between gap-3">
-                  <label className="block text-sm font-medium text-gray-300">
+                  <label className="block text-[11px] font-black uppercase tracking-[0.14em] text-[#9fb4b8]">
                     OpenCode Server
                   </label>
                   {initialFocus === "server" && (
-                    <span className="shrink-0 rounded-md border border-cyan-300/30 bg-cyan-300/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-cyan-100">
+                    <span className="shrink-0 rounded-md border border-[#33d1a0]/30 bg-[#33d1a0]/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-[#bfeede]">
                       route target
                     </span>
                   )}
@@ -156,7 +159,7 @@ export function SettingsPanel({ isOpen, onClose, initialFocus, currentDatabasePa
                     setSettingsError(null);
                   }}
                   placeholder="http://127.0.0.1:4096"
-                  className="w-full rounded-lg border border-gray-700 bg-gray-950/80 px-3 py-2 text-sm text-white outline-none transition-colors placeholder:text-gray-500 focus:border-cyan-400/70"
+                  className="w-full rounded-lg border border-[#9fd7df]/20 bg-[#050b0e] px-3 py-2 text-sm text-[#d7efe8] outline-none transition-colors placeholder:text-[#4f6166] focus:border-[#33d1a0]/70"
                 />
                 <div className="mt-2 flex flex-wrap gap-2">
                   {["http://127.0.0.1:4096", "http://127.0.0.1:4097"].map((url) => (
@@ -166,29 +169,29 @@ export function SettingsPanel({ isOpen, onClose, initialFocus, currentDatabasePa
                       onClick={() => setServerUrl(url)}
                       className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold transition-colors ${
                         serverUrl === url
-                          ? "border-cyan-300/60 bg-cyan-300/15 text-cyan-100"
-                          : "border-gray-700 bg-gray-800/60 text-gray-300 hover:border-gray-500"
+                          ? "border-[#33d1a0]/60 bg-[#33d1a0]/15 text-[#c8f8e8]"
+                          : "border-[#9fd7df]/18 bg-[#0e1a1d] text-[#9fb4b8] hover:border-[#9fd7df]/35 hover:text-[#d7efe8]"
                       }`}
                     >
                       {url.replace("http://127.0.0.1:", ":")}
                     </button>
                   ))}
                 </div>
-                <p className="mt-2 text-xs leading-5 text-gray-400">
+                <p className="mt-2 text-xs leading-5 text-[#9fb4b8]">
                   For realtime independent TUI dispatch, start OpenCode with the same port:
                   {" "}
-                  <span className="font-mono text-gray-200">opencode -s &lt;session&gt; --port 4097</span>
+                  <span className="font-mono text-[#d8fff4]">opencode -s &lt;session&gt; --port 4097</span>
                 </p>
               </div>
 
-              <div className={initialFocus === "database" ? "rounded-xl border border-cyan-300/30 bg-cyan-300/[0.055] p-3 shadow-[0_0_24px_rgba(103,232,249,0.08)]" : ""}>
+              <div className={initialFocus === "database" ? "rounded-xl border border-[#33d1a0]/30 bg-[#33d1a0]/[0.055] p-3 shadow-[0_0_24px_rgba(51,209,160,0.08)]" : ""}>
                 <div className="mb-2 flex items-center justify-between gap-3">
-                  <label className="block text-sm font-medium text-gray-300">
+                  <label className="block text-[11px] font-black uppercase tracking-[0.14em] text-[#9fb4b8]">
                     OpenCode Database
                   </label>
                   <div className="flex shrink-0 items-center gap-2">
                     {initialFocus === "database" && (
-                      <span className="rounded-md border border-cyan-300/30 bg-cyan-300/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-cyan-100">
+                      <span className="rounded-md border border-[#33d1a0]/30 bg-[#33d1a0]/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-[#bfeede]">
                         route target
                       </span>
                     )}
@@ -196,37 +199,37 @@ export function SettingsPanel({ isOpen, onClose, initialFocus, currentDatabasePa
                       type="button"
                       disabled={isLoading || isApplying}
                       onClick={() => void loadDatabases()}
-                      className="rounded-md border border-gray-600 bg-gray-800/70 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-gray-200 transition-colors hover:border-cyan-300/40 hover:text-white disabled:cursor-default disabled:opacity-40"
+                      className="rounded-md border border-[#9fd7df]/25 bg-[#071012]/80 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-[#9fb4b8] transition-colors hover:border-[#33d1a0]/45 hover:text-white disabled:cursor-default disabled:opacity-40"
                     >
                       {isLoading ? "Scanning" : "Rescan"}
                     </button>
                   </div>
                 </div>
-                <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px] font-bold uppercase tracking-[0.08em] text-gray-400">
-                  <span className="rounded-md border border-gray-700 bg-gray-950/40 px-2 py-1">
+                <div className="mb-2 flex flex-wrap items-center gap-2 text-[10px] font-bold uppercase tracking-[0.08em]">
+                  <span className="rounded-md border border-[#9fd7df]/18 bg-[#050b0e]/60 px-2 py-1 text-[#9fb4b8]">
                     {databases.length} found
                   </span>
                   {selectedDbIsCurrent && (
-                    <span className="rounded-md border border-emerald-300/25 bg-emerald-300/10 px-2 py-1 text-emerald-100">
+                    <span className="rounded-md border border-[#55d69e]/25 bg-[#55d69e]/10 px-2 py-1 text-[#bfeede]">
                       current route
                     </span>
                   )}
                   {currentDatabasePath && !selectedDbIsCurrent && (
-                    <span className="rounded-md border border-amber-300/25 bg-amber-300/10 px-2 py-1 text-amber-100">
+                    <span className="rounded-md border border-[#ffd166]/25 bg-[#ffd166]/10 px-2 py-1 text-[#f0e2bf]">
                       route differs
                     </span>
                   )}
                 </div>
-                
+
                 {isLoading ? (
                   <div className="flex items-center justify-center py-4">
-                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white"></div>
+                    <div className="h-6 w-6 animate-spin rounded-full border-b-2 border-[#33d1a0]"></div>
                   </div>
                 ) : databases.length === 0 ? (
-                  <div className="text-center py-4 text-gray-400">
-                    <p className="text-2xl mb-2">🐱</p>
-                    <p>No OpenCode databases found</p>
-                    <p className="text-xs mt-1">
+                  <div className="py-4 text-center text-[#9fb4b8]">
+                    <p className="mb-2 text-2xl">🐱</p>
+                    <p className="text-sm">No OpenCode databases found</p>
+                    <p className="mt-1 text-xs text-[#6f8c96]">
                       Make sure you have run OpenCode at least once
                     </p>
                   </div>
@@ -235,10 +238,10 @@ export function SettingsPanel({ isOpen, onClose, initialFocus, currentDatabasePa
                     {databases.map((db) => (
                       <label
                         key={db}
-                        className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors ${
+                        className={`flex cursor-pointer items-center gap-3 rounded-lg p-3 transition-colors ${
                           selectedDb === db
-                            ? "bg-blue-600/20 border border-blue-500/50"
-                            : "bg-gray-800/50 border border-gray-700 hover:bg-gray-700/50"
+                            ? "border border-[#33d1a0]/45 bg-[#33d1a0]/[0.12]"
+                            : "border border-[#9fd7df]/12 bg-[#0e1a1d] hover:border-[#9fd7df]/25 hover:bg-[#142226]"
                         }`}
                       >
                         <input
@@ -247,20 +250,20 @@ export function SettingsPanel({ isOpen, onClose, initialFocus, currentDatabasePa
                           value={db}
                           checked={selectedDb === db}
                           onChange={(e) => setSelectedDb(e.target.value)}
-                          className="w-4 h-4 text-blue-600"
+                          className="h-4 w-4 accent-[#33d1a0]"
                         />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm text-white truncate">{db}</p>
-                          <p className="text-xs text-gray-400">OpenCode Database</p>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm text-[#d7efe8]">{db}</p>
+                          <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-[#6f8c96]">OpenCode Database</p>
                         </div>
                       </label>
                     ))}
                   </div>
                 )}
               </div>
-              
-              <div className="flex items-center gap-2 text-xs text-gray-400">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+
+              <div className="flex items-center gap-2 text-xs text-[#9fb4b8]">
+                <svg className="h-4 w-4 shrink-0 text-[#33d1a0]/70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 <span>
@@ -268,18 +271,20 @@ export function SettingsPanel({ isOpen, onClose, initialFocus, currentDatabasePa
                 </span>
               </div>
             </div>
-            
-            <div className="flex items-center justify-end gap-3 p-4 border-t border-gray-700">
+
+            <div className="flex items-center justify-end gap-3 border-t border-[#89b9c3]/14 px-5 py-4">
               <button
+                type="button"
                 onClick={onClose}
-                className="px-4 py-2 text-sm text-gray-300 hover:text-white transition-colors"
+                className="rounded-lg border border-[#9fd7df]/20 bg-[#071012]/60 px-4 py-2 text-sm font-semibold text-[#9fb4b8] transition-colors hover:border-[#9fd7df]/40 hover:bg-[#d7efe8]/10 hover:text-white"
               >
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={handleApply}
                 disabled={!serverUrl.trim() || isApplying}
-                className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg transition-colors"
+                className="rounded-lg bg-[#33d1a0] px-4 py-2 text-sm font-bold text-[#04201a] transition-colors hover:bg-[#55d69e] disabled:cursor-not-allowed disabled:bg-[#16262a] disabled:text-white/30"
               >
                 {isApplying ? "Syncing..." : "Apply"}
               </button>

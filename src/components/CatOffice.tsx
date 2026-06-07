@@ -133,6 +133,8 @@ export function CatOffice({
               eventHistory={eventHistory}
               sessionTodos={sessionTodos}
               focusedSessionId={selectedSessionId}
+              isWebviewOpen={Boolean(selectedSessionId)}
+              rightInset={selectedSessionId ? EMBEDDED_WEBVIEW_WIDTH : 0}
               onSelectCat={() => setSelectedSessionId(null)}
               onSelectSession={handleSelectSession}
               onRunSessionAction={() => {}}

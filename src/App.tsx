@@ -96,6 +96,7 @@ function App() {
         {!showPanel && !showSettings && (
           <div className="flex gap-1 opacity-30 transition-all duration-200 group-hover/app:opacity-100">
             <button
+              type="button"
               onClick={() => openSettings()}
               className="flex h-5 w-5 items-center justify-center rounded-full bg-white/8 text-white/55 hover:bg-white/16 hover:text-white transition-all"
               title="设置"
@@ -106,6 +107,7 @@ function App() {
               </svg>
             </button>
             <button
+              type="button"
               onClick={() => void hideWindow()}
               className="flex h-5 w-5 items-center justify-center rounded-full bg-white/8 text-white/55 hover:bg-white/16 hover:text-white transition-all"
               title="隐藏"
