@@ -1,9 +1,15 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, type MouseEvent, type PointerEvent } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { OpenCodeEvent, PetState } from "../types";
+import { isTauriRuntime } from "../tauriEnv";
 
 // Only show the speech bubble for events newer than this; older events stay in
 // the persistent status chip instead of lingering in the bubble.
 const FRESH_WINDOW_MS = 45_000;
+const DRAG_DISTANCE_PX = 4;
+const DRAG_HOLD_MS = 180;
+const DRAG_CLICK_SUPPRESS_MS = 240;
+const DRAG_FALLBACK_RESET_MS = 1_500;
 
 type CatMood = "sleeping" | "idle" | "thinking" | "working" | "success" | "error" | "waiting";
 
@@ -11,6 +17,7 @@ interface XiaoHeiProps {
   petState: PetState;
   lastEvent: OpenCodeEvent | null;
   isChatOpen: boolean;
+  canDragWindow: boolean;
   onClick: () => void;
 }
 
@@ -37,8 +44,13 @@ function spritePose(mood: CatMood): "idle" | "work" | "sleep" {
   return "idle";
 }
 
-export function XiaoHei({ petState, lastEvent, isChatOpen, onClick }: XiaoHeiProps) {
+export function XiaoHei({ petState, lastEvent, isChatOpen, canDragWindow, onClick }: XiaoHeiProps) {
   const mood = useMemo(() => getMood(petState, lastEvent, isChatOpen), [petState, lastEvent, isChatOpen]);
+  const dragStartRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+  const dragTimerRef = useRef<number | null>(null);
+  const dragResetTimerRef = useRef<number | null>(null);
+  const dragStartedRef = useRef(false);
+  const suppressClickRef = useRef(false);
 
   const isWorking = petState.progress.status === "working";
   const toolName = petState.progress.current_tool;
@@ -60,12 +72,107 @@ export function XiaoHei({ petState, lastEvent, isChatOpen, onClick }: XiaoHeiPro
     mood === "success" ? "drop-shadow-[0_0_12px_rgba(85,214,158,0.75)]" :
     "drop-shadow-[0_6px_16px_rgba(0,0,0,0.55)]";
 
+  const clearDragTimer = () => {
+    if (dragTimerRef.current === null) return;
+    window.clearTimeout(dragTimerRef.current);
+    dragTimerRef.current = null;
+  };
+
+  const clearDragResetTimer = () => {
+    if (dragResetTimerRef.current === null) return;
+    window.clearTimeout(dragResetTimerRef.current);
+    dragResetTimerRef.current = null;
+  };
+
+  const resetDragStateSoon = (delay = DRAG_CLICK_SUPPRESS_MS) => {
+    clearDragResetTimer();
+    dragResetTimerRef.current = window.setTimeout(() => {
+      dragStartedRef.current = false;
+      suppressClickRef.current = false;
+      dragResetTimerRef.current = null;
+    }, delay);
+  };
+
+  const releasePointerCapture = (target: HTMLButtonElement, pointerId: number) => {
+    if (!target.hasPointerCapture(pointerId)) return;
+    try {
+      target.releasePointerCapture(pointerId);
+    } catch {
+      // Native window drag can take ownership of the pointer before React sees pointerup.
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      clearDragTimer();
+      clearDragResetTimer();
+    };
+  }, []);
+
+  const startWindowDrag = (target: HTMLButtonElement, pointerId: number) => {
+    if (dragStartedRef.current || !canDragWindow || !isTauriRuntime()) return;
+    clearDragTimer();
+    clearDragResetTimer();
+    dragStartedRef.current = true;
+    suppressClickRef.current = true;
+    releasePointerCapture(target, pointerId);
+    void getCurrentWindow().startDragging().catch(() => {
+      dragStartedRef.current = false;
+      suppressClickRef.current = false;
+    });
+    resetDragStateSoon(DRAG_FALLBACK_RESET_MS);
+  };
+
+  const handlePointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0 || !canDragWindow || !isTauriRuntime()) return;
+    dragStartRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+    dragStartedRef.current = false;
+    suppressClickRef.current = false;
+    clearDragResetTimer();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const target = event.currentTarget;
+    const pointerId = event.pointerId;
+    dragTimerRef.current = window.setTimeout(() => startWindowDrag(target, pointerId), DRAG_HOLD_MS);
+  };
+
+  const handlePointerMove = (event: PointerEvent<HTMLButtonElement>) => {
+    const start = dragStartRef.current;
+    if (!start || start.pointerId !== event.pointerId || dragStartedRef.current) return;
+    const moved = Math.hypot(event.clientX - start.x, event.clientY - start.y);
+    if (moved >= DRAG_DISTANCE_PX) startWindowDrag(event.currentTarget, event.pointerId);
+  };
+
+  const handlePointerEnd = (event: PointerEvent<HTMLButtonElement>) => {
+    const wasDragging = dragStartedRef.current;
+    clearDragTimer();
+    dragStartRef.current = null;
+    releasePointerCapture(event.currentTarget, event.pointerId);
+    if (wasDragging) resetDragStateSoon();
+  };
+
+  const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
+    if (suppressClickRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      dragStartedRef.current = false;
+      suppressClickRef.current = false;
+      return;
+    }
+    onClick();
+  };
+
   return (
     <button
       type="button"
-      onClick={onClick}
-      className="relative flex flex-col items-center select-none border-0 bg-transparent p-0 outline-none group"
-      title="点击打开面板"
+      onClick={handleClick}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerEnd}
+      onPointerCancel={handlePointerEnd}
+      className={`relative flex flex-col items-center select-none border-0 bg-transparent p-0 outline-none group ${
+        canDragWindow ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
+      }`}
+      title={canDragWindow ? "点击打开，拖动移动" : "点击打开面板"}
       data-no-drag
     >
       {/* Speech bubble — ring opacity signals priority: /55 for error/success, /40 for neutral */}

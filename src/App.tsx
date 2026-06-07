@@ -95,6 +95,7 @@ function App() {
           petState={petState}
           lastEvent={lastEvent}
           isChatOpen={showPanel}
+          canDragWindow={!showPanel && !showSettings}
           onClick={openPanel}
         />
 
