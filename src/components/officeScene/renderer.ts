@@ -10,7 +10,7 @@ import {
 } from "./canvasPrimitives";
 import { CANVAS_HEIGHT, PIXEL_ALERT, officeLayout } from "./layout";
 import { activityDesks, visibleSessionCount } from "./model";
-import { drawDeskPods, drawRoomStructure } from "./room";
+import { drawRoomStructure, drawWorkstationBackLayer, drawWorkstationFrontLayer } from "./room";
 import { compactCanvasText } from "./text";
 import type {
   CatSpritePose,
@@ -399,7 +399,6 @@ function drawWorkstation(
     drawFallbackCat(ctx, desk, state, bob);
   }
 
-  if (desk.sessionId && !isEmpty) drawDeskNameplate(ctx, desk);
 }
 
 function workstationHitBox(desk: Desk): HitBox | null {
@@ -490,8 +489,12 @@ export function renderOfficeScene({
   drawShell(ctx, layout);
   drawWindows(ctx, frame, layout);
   drawRoomStructure(ctx, layout);
-  drawDeskPods(ctx, liveDesks, layout, frame);
+  drawWorkstationBackLayer(ctx, liveDesks, layout);
   liveDesks.forEach((desk) => drawWorkstation(ctx, desk, frame, sprites));
+  drawWorkstationFrontLayer(ctx, liveDesks, layout, frame);
+  liveDesks.forEach((desk) => {
+    if (desk.sessionId && desk.status !== "empty") drawDeskNameplate(ctx, desk);
+  });
   liveDesks.forEach((desk) => {
     if (desk.sessionId && sessionTodos[desk.sessionId]?.length) {
       if (isWebviewOpen) {

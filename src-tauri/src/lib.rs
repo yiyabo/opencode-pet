@@ -3349,9 +3349,9 @@ async fn launch_opencode_web(
 
 // Width (logical px) of the embedded OpenCode webview shown on the right side of
 // the office window. Keep in sync with EMBEDDED_WEBVIEW_WIDTH in src/constants.ts.
-// The office window is 1380px wide (see set_window_mode), so the webview fills the
+// The office window is 1480px wide (see set_window_mode), so the webview fills the
 // right half and its left edge sits at EMBEDDED_WEBVIEW_WIDTH.
-const EMBEDDED_WEBVIEW_WIDTH: f64 = 690.0;
+const EMBEDDED_WEBVIEW_WIDTH: f64 = 740.0;
 
 #[tauri::command]
 fn open_embedded_webview(app: AppHandle, url: String, _title: String) -> Result<(), String> {
@@ -3592,7 +3592,7 @@ fn set_window_mode(mode: String, app: AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let size = match mode.as_str() {
             "chat" => LogicalSize::new(620.0, 480.0),
-            "office" => LogicalSize::new(1380.0, 820.0),
+            "office" => LogicalSize::new(1480.0, 820.0),
             "settings" => LogicalSize::new(480.0, 520.0),
             "pets" => LogicalSize::new(480.0, 600.0),
             _ => LogicalSize::new(160.0, 220.0),

@@ -5,18 +5,18 @@ export const PIXEL_ALERT = "#e8755f";
 
 export const officeLayouts: Record<"full" | "dock", OfficeLayout> = {
   full: {
-    width: 840,
+    width: 900,
     title: "OPEN  CODE  NIGHT  SHIFT",
     footer: "CLICK A DESK",
     shellX: 38,
-    windowXs: [88, 182, 276, 370, 464, 558, 652, 746],
+    windowXs: [82, 176, 270, 364, 458, 552, 646, 740, 834],
     windowWidth: 72,
-    noiseMarks: 34,
+    noiseMarks: 38,
     desks: [
-      { x: 200, y: 150, label: "frontend", accent: "#65b7ff", tone: "blue", worker: "tuxedo" },
-      { x: 560, y: 150, label: "core", accent: "#55d69e", tone: "green", worker: "orange" },
-      { x: 200, y: 350, label: "tests", accent: "#a7e56f", tone: "mint", worker: "calico" },
-      { x: 560, y: 350, label: "review", accent: "#ffd166", tone: "amber", worker: "gray" },
+      { x: 230, y: 150, label: "frontend", accent: "#65b7ff", tone: "blue", worker: "tuxedo" },
+      { x: 670, y: 150, label: "core", accent: "#55d69e", tone: "green", worker: "orange" },
+      { x: 230, y: 350, label: "tests", accent: "#a7e56f", tone: "mint", worker: "calico" },
+      { x: 670, y: 350, label: "review", accent: "#ffd166", tone: "amber", worker: "gray" },
     ],
   },
   dock: {
