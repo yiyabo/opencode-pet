@@ -1,0 +1,194 @@
+import type {
+  OpenCodeActivityItem,
+  OpenCodeAttentionItem,
+  OpenCodeSessionLink,
+} from "../../types";
+import { PIXEL_ALERT } from "./layout";
+import { compactDeskLabel, shortSessionId } from "./text";
+import type { Desk } from "./types";
+
+function deskStatus(link?: OpenCodeSessionLink): Desk["status"] {
+  if (!link) return "empty";
+  if (link.status === "linked" || link.status === "title-diff") return "linked";
+  if (link.status === "directory-diff") return "drift";
+  if (link.status === "server-only") return "server";
+  if (link.status === "local-only") return "local";
+  return "drift";
+}
+
+function deskStatusFromActivity(item?: OpenCodeActivityItem): Desk["status"] {
+  if (!item) return "empty";
+  if (
+    item.status === "working"
+    || item.status === "completed"
+    || item.status === "ready"
+    || item.status === "followed"
+    || item.status === "quiet"
+  ) return "linked";
+  if (item.status === "server-only") return "server";
+  if (item.status === "local-only" || item.status === "error") return "local";
+  if (item.status === "drift") return "drift";
+  return "drift";
+}
+
+function linkTitle(link: OpenCodeSessionLink): string {
+  return link.local?.title || link.server?.title || link.id;
+}
+
+function deskAccent(status: Desk["status"], active: boolean, fallback: string): string {
+  if (active) return "#d8fff4";
+  switch (status) {
+    case "linked":
+      return "#55d69e";
+    case "drift":
+      return "#ffd166";
+    case "local":
+      return PIXEL_ALERT;
+    case "server":
+      return "#8ecaff";
+    default:
+      return fallback;
+  }
+}
+
+function deskActionLabel(actionKind?: OpenCodeAttentionItem["action_kind"]): string {
+  switch (actionKind) {
+    case "fix":
+      return "FIX";
+    case "continue":
+      return "GO";
+    case "retry-dispatch":
+      return "TX";
+    case "attach":
+      return "TUI";
+    case "web":
+      return "WEB";
+    case "focus":
+      return "SYNC";
+    case "review":
+      return "OK";
+    default:
+      return "";
+  }
+}
+
+function attentionForSession(
+  sessionId: string,
+  attentionItems: OpenCodeAttentionItem[] = [],
+): OpenCodeAttentionItem | undefined {
+  return attentionItems.find((item) => item.session_id === sessionId);
+}
+
+export function orderedSessionLinks(sessionLinks: OpenCodeSessionLink[] = []): OpenCodeSessionLink[] {
+  const orderedLinks = [
+    ...sessionLinks.filter((link) => link.is_bound || link.is_current),
+    ...sessionLinks.filter((link) => !link.is_bound && !link.is_current),
+  ];
+  return orderedLinks.filter(
+    (link, index, items) => items.findIndex((item) => item.id === link.id) === index,
+  );
+}
+
+export function orderedActivityItems(activityItems: OpenCodeActivityItem[] = []): OpenCodeActivityItem[] {
+  const orderedItems = [
+    ...activityItems.filter((item) => item.is_bound || item.is_current),
+    ...activityItems.filter((item) => !item.is_bound && !item.is_current),
+  ];
+  return orderedItems.filter(
+    (item, index, items) => items.findIndex((candidate) => candidate.id === item.id) === index,
+  );
+}
+
+export function visibleSessionCount(
+  activityItems: OpenCodeActivityItem[] = [],
+  sessionLinks: OpenCodeSessionLink[] = [],
+): number {
+  return activityItems.length > 0 ? orderedActivityItems(activityItems).length : orderedSessionLinks(sessionLinks).length;
+}
+
+function sessionDesks(
+  baseDesks: Desk[],
+  sessionLinks: OpenCodeSessionLink[] = [],
+  focusedSessionId?: string | null,
+  attentionItems: OpenCodeAttentionItem[] = [],
+): Desk[] {
+  const uniqueLinks = orderedSessionLinks(sessionLinks);
+
+  return baseDesks.map((desk, index) => {
+    const link = uniqueLinks[index];
+    if (!link) return { ...desk, status: "empty" };
+
+    const status = deskStatus(link);
+    const active = link.is_bound || link.is_current;
+    const focused = link.id === focusedSessionId;
+    const attention = attentionForSession(link.id, attentionItems);
+    return {
+      ...desk,
+      label: compactDeskLabel(linkTitle(link)),
+      accent: deskAccent(status, active || focused, desk.accent),
+      status,
+      activityStatus: "linked",
+      sessionId: link.id,
+      detail: shortSessionId(link.id),
+      summary: link.local?.directory || link.server?.directory,
+      source: link.status,
+      messageCount: link.local?.message_count ?? link.server?.message_count,
+      model: link.server?.model_id,
+      actionKind: attention?.action_kind,
+      actionLabel: deskActionLabel(attention?.action_kind),
+      active,
+      focused,
+    };
+  });
+}
+
+export function activityDesks(
+  baseDesks: Desk[],
+  activityItems: OpenCodeActivityItem[] = [],
+  fallbackLinks: OpenCodeSessionLink[] = [],
+  focusedSessionId?: string | null,
+  attentionItems: OpenCodeAttentionItem[] = [],
+): Desk[] {
+  if (activityItems.length === 0) return sessionDesks(baseDesks, fallbackLinks, focusedSessionId, attentionItems);
+  const uniqueItems = orderedActivityItems(activityItems);
+
+  return baseDesks.map((desk, index) => {
+    const item = uniqueItems[index];
+    if (!item) return { ...desk, status: "empty" };
+
+    const status = deskStatusFromActivity(item);
+    const active = item.is_bound || item.is_current || item.status === "working";
+    const focused = item.id === focusedSessionId;
+    const attention = attentionForSession(item.id, attentionItems);
+    return {
+      ...desk,
+      label: compactDeskLabel(item.title),
+      accent: deskAccent(status, active || focused, desk.accent),
+      status,
+      activityStatus: item.status,
+      phase: item.phase,
+      sessionId: item.id,
+      detail: `${shortSessionId(item.id)} ${item.status === "working" ? "run" : item.source}`,
+      summary: item.last_message,
+      statusReason: item.status_reason,
+      lastSignal: item.last_signal,
+      source: item.source,
+      toolName: item.tool_name,
+      model: item.model,
+      messageCount: item.message_count,
+      eventType: item.last_event?.event_type,
+      eventSeverity: item.last_event?.severity,
+      lastRole: item.last_role,
+      lastUserMessage: item.last_user_message,
+      lastAssistantMessage: item.last_assistant_message,
+      awaitingUser: item.awaiting_user,
+      idleMs: item.idle_ms,
+      totalTools: item.total_tools,
+      completedTools: item.completed_tools,
+      actionKind: attention?.action_kind,
+      actionLabel: deskActionLabel(attention?.action_kind),
+      active,
+      focused,
+    };
+  });
+}
