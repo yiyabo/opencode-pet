@@ -252,6 +252,48 @@ export interface OpenCodeAttentionItem {
   timestamp: number;
 }
 
+export type CatSessionDigestPhase =
+  | "unbound"
+  | "offline"
+  | "working"
+  | "waiting"
+  | "blocked"
+  | "completed"
+  | "ready";
+
+export interface CatSessionDigest {
+  session_id?: string;
+  title: string;
+  phase: CatSessionDigestPhase;
+  headline: string;
+  detail: string;
+  todo_completed: number;
+  todo_total: number;
+  active_todo?: string;
+  current_tool?: string;
+  last_signal?: string;
+  next_action_label: string;
+  next_action_summary: string;
+  updated_at?: number;
+}
+
+export interface SessionChoice {
+  id: string;
+  title: string;
+  directory?: string;
+  status: string;
+  phase: string;
+  summary: string;
+  last_signal: string;
+  is_bound: boolean;
+  is_current: boolean;
+  is_bindable: boolean;
+  todo_completed: number;
+  todo_total: number;
+  active_todo?: string;
+  updated_at?: number;
+}
+
 export interface ChatRequest {
   prompt: string;
   session_id?: string;

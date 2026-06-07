@@ -1,14 +1,17 @@
-import { useState, useEffect, type PointerEvent } from "react";
+import { useState, useEffect, useMemo, type PointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { usePetStore } from "./store";
 import { XiaoHei } from "./components/XiaoHei";
 import { CatOffice } from "./components/CatOffice";
+import { SessionPicker } from "./components/SessionPicker";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { isTauriRuntime } from "./tauriEnv";
+import { buildCatSessionDigest } from "./opencodeDigest";
 
 function App() {
   const [showPanel, setShowPanel] = useState(false);
+  const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsFocus, setSettingsFocus] = useState<"database" | "server" | undefined>(undefined);
 
@@ -22,6 +25,7 @@ function App() {
     attentionItems,
     officeSync,
     sessionTodos,
+    boundSessionId,
     startListening,
     fetchPetConfigs,
     refreshOfficeState,
@@ -51,14 +55,37 @@ function App() {
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
-    const mode = showPanel ? "office" : showSettings ? "settings" : "compact";
+    const mode = showPanel ? "office" : showSettings ? "settings" : showSessionPicker ? "picker" : "compact";
     void invoke("set_window_mode", { mode });
-  }, [showPanel, showSettings]);
+  }, [showPanel, showSettings, showSessionPicker]);
 
-  const openPanel = () => {
+  const digest = useMemo(
+    () => buildCatSessionDigest({ workspaceState, activityItems, sessionTodos, lastEvent }),
+    [workspaceState, activityItems, sessionTodos, lastEvent],
+  );
+
+  const openSessionPicker = () => {
+    if (isTauriRuntime()) {
+      void invoke("set_window_mode", { mode: "picker" });
+    }
+    setShowPanel(false);
+    setShowSettings(false);
+    setShowSessionPicker(true);
+    window.setTimeout(() => {
+      void refreshOfficeState("session-picker");
+      void fetchAllTodos();
+    }, 0);
+  };
+
+  const openOffice = () => {
+    if (!boundSessionId) {
+      openSessionPicker();
+      return;
+    }
     if (isTauriRuntime()) {
       void invoke("set_window_mode", { mode: "office" });
     }
+    setShowSessionPicker(false);
     setShowPanel(true);
     window.setTimeout(() => {
       void refreshOfficeState("open-office");
@@ -67,6 +94,7 @@ function App() {
 
   const openSettings = (focus?: "database" | "server") => {
     setSettingsFocus(focus);
+    setShowSessionPicker(false);
     setShowSettings(true);
   };
 
@@ -94,13 +122,14 @@ function App() {
         <XiaoHei
           petState={petState}
           lastEvent={lastEvent}
-          isChatOpen={showPanel}
-          canDragWindow={!showPanel && !showSettings}
-          onClick={openPanel}
+          isChatOpen={showPanel || showSessionPicker}
+          canDragWindow={!showPanel && !showSettings && !showSessionPicker}
+          digest={digest}
+          onClick={openSessionPicker}
         />
 
         {/* Hover micro-controls */}
-        {!showPanel && !showSettings && (
+        {!showPanel && !showSettings && !showSessionPicker && (
           <div className="flex gap-1 opacity-30 transition-all duration-200 group-hover/app:opacity-100">
             <button
               type="button"
@@ -127,6 +156,21 @@ function App() {
         )}
       </div>
 
+      <SessionPicker
+        isOpen={showSessionPicker}
+        digest={digest}
+        workspaceState={workspaceState}
+        sessionLinks={sessionLinks}
+        activityItems={activityItems}
+        sessionTodos={sessionTodos}
+        officeSync={officeSync}
+        onClose={() => setShowSessionPicker(false)}
+        onOpenOffice={openOffice}
+        onOpenSettings={openSettings}
+        onRefreshOfficeState={refreshOfficeState}
+        onBindSession={bindSession}
+      />
+
       <CatOffice
         isOpen={showPanel}
         event={lastEvent}
@@ -136,6 +180,7 @@ function App() {
         activityItems={activityItems}
         attentionItems={attentionItems}
         officeSync={officeSync}
+        digest={digest}
         sessionTodos={sessionTodos}
         onClose={() => setShowPanel(false)}
         onRefreshOfficeState={refreshOfficeState}

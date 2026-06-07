@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AnimatePresence, motion } from "framer-motion";
 import type {
+  CatSessionDigest,
   OfficeSyncState,
   OpenCodeAlignmentResult,
   OpenCodeActivityItem,
@@ -124,6 +125,7 @@ interface CatOfficeProps {
   activityItems: OpenCodeActivityItem[];
   attentionItems: OpenCodeAttentionItem[];
   officeSync: OfficeSyncState;
+  digest: CatSessionDigest;
   sessionTodos: Record<string, TodoItem[]>;
   onClose: () => void;
   onRefreshOfficeState: (source?: string) => Promise<OpenCodeOfficeSnapshot | null>;
@@ -140,6 +142,7 @@ export function CatOffice({
   event,
   eventHistory,
   officeSync,
+  digest,
   sessionTodos,
   onClose,
   onOpenSettings,
@@ -149,6 +152,8 @@ export function CatOffice({
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [webviewSessionId, setWebviewSessionId] = useState<string | null>(null);
   const [openingSessionId, setOpeningSessionId] = useState<string | null>(null);
+  const [bindingSessionId, setBindingSessionId] = useState<string | null>(null);
+  const [bindingMessage, setBindingMessage] = useState<string | null>(null);
   const selectionSequenceRef = useRef(0);
   const webviewOpenTimerRef = useRef<number | null>(null);
   const openingTimerRef = useRef<number | null>(null);
@@ -247,65 +252,61 @@ export function CatOffice({
     setSelectedSessionId(sessionId);
     const selectionSequence = selectionSequenceRef.current + 1;
     selectionSequenceRef.current = selectionSequence;
-    const fastTarget = fastWebviewTarget(sessionId);
-    const openedFastWebview = fastTarget
-      ? openSessionWebview(sessionId, fastTarget.serverUrl, fastTarget.directory, selectionSequence)
-      : false;
+    setBindingSessionId(sessionId);
+    setBindingMessage(null);
+    clearWebviewTimers();
+    setWebviewSessionId(null);
+    setOpeningSessionId(null);
+    void closeEmbeddedWebview();
 
     try {
       const result = await onBindSession(sessionId);
       if (selectionSequence !== selectionSequenceRef.current) return;
       if (!result) {
-        if (!openedFastWebview) setSelectedSessionId(null);
+        setBindingMessage("Bind failed");
+        setSelectedSessionId(null);
         return;
       }
-
-      const nextWorkspace = result.workspace_state ?? workspaceState;
-      const nextSessionLinks = result.session_links.length > 0 ? result.session_links : sessionLinks;
-      const serverUrl = nextWorkspace?.server_url ?? workspaceState?.server_url ?? "http://127.0.0.1:4096";
-      const selectedLink = nextSessionLinks.find((link) => link.id === sessionId);
-      const workspaceServerSession =
-        nextWorkspace?.server_session?.id === sessionId ? nextWorkspace.server_session : undefined;
-      const serverHasSession = Boolean(selectedLink?.server || workspaceServerSession || result.tui_selected);
-      const selectedDirectory =
-        selectedLink?.server?.directory
-        || workspaceServerSession?.directory
-        || (serverHasSession ? selectedLink?.local?.directory || nextWorkspace?.session?.directory : undefined);
-      
-      const shouldCorrectFastWebview =
-        openedFastWebview
-        && fastTarget
-        && !fastTarget.isServerDirectory
-        && selectedDirectory
-        && selectedDirectory !== fastTarget.directory;
-
-      if (
-        (!openedFastWebview || shouldCorrectFastWebview)
-        && nextWorkspace?.server_online
-        && selectedDirectory
-        && serverHasSession
-      ) {
-        openSessionWebview(sessionId, serverUrl, selectedDirectory, selectionSequence);
-      }
+      setBindingMessage(result.tui_selected ? "Focused in OpenCode" : "Bound locally");
     } catch (e) {
       console.error("Failed to bind session:", e);
-      if (selectionSequence === selectionSequenceRef.current && !openedFastWebview) {
+      if (selectionSequence === selectionSequenceRef.current) {
+        setBindingMessage("Bind failed");
         setSelectedSessionId(null);
+      }
+    } finally {
+      if (selectionSequence === selectionSequenceRef.current) {
+        setBindingSessionId(null);
       }
     }
   };
 
-  const handleCloseWebview = () => {
+  const handleOpenWebview = () => {
+    const sessionId = selectedSessionId ?? workspaceState?.bound_session_id ?? workspaceState?.session?.id;
+    if (!sessionId) return;
+    const selectionSequence = selectionSequenceRef.current + 1;
+    selectionSequenceRef.current = selectionSequence;
+    const target = fastWebviewTarget(sessionId);
+    if (!target) {
+      setBindingMessage("OpenCode web is not available for this session");
+      return;
+    }
+    setSelectedSessionId(sessionId);
+    setBindingMessage(null);
+    openSessionWebview(sessionId, target.serverUrl, target.directory, selectionSequence);
+  };
+
+  const handleCloseWebview = (clearSelection = false) => {
     selectionSequenceRef.current += 1;
     clearWebviewTimers();
-    setSelectedSessionId(null);
+    if (clearSelection) setSelectedSessionId(null);
     setWebviewSessionId(null);
     setOpeningSessionId(null);
     void closeEmbeddedWebview();
   };
 
   const handleCloseOffice = () => {
-    handleCloseWebview();
+    handleCloseWebview(true);
     onClose();
   };
 
@@ -323,9 +324,15 @@ export function CatOffice({
     clearWebviewTimers();
   }, []);
 
-  const selectedLink = sessionLinks?.find((l) => l.id === selectedSessionId);
+  useEffect(() => {
+    if (!isOpen) return;
+    setSelectedSessionId((current) => current ?? workspaceState?.bound_session_id ?? workspaceState?.session?.id ?? null);
+  }, [isOpen, workspaceState?.bound_session_id, workspaceState?.session?.id]);
+
+  const focusedSessionId = selectedSessionId ?? workspaceState?.bound_session_id ?? workspaceState?.session?.id ?? null;
+  const selectedLink = sessionLinks?.find((l) => l.id === focusedSessionId);
   const selectedTitle = selectedLink?.local?.title || selectedLink?.server?.title;
-  const selectedTodos = selectedSessionId ? sessionTodos[selectedSessionId] : undefined;
+  const selectedTodos = focusedSessionId ? sessionTodos[focusedSessionId] : undefined;
   const selectedCompleted = selectedTodos?.filter((t) => t.status === "completed").length ?? 0;
   const selectedTotal = selectedTodos?.length ?? 0;
 
@@ -364,10 +371,10 @@ export function CatOffice({
                 latestEvent={event}
                 eventHistory={eventHistory}
                 sessionTodos={sessionTodos}
-                focusedSessionId={selectedSessionId}
+                focusedSessionId={focusedSessionId}
                 isWebviewOpen={isWebviewDocked}
                 rightInset={isWebviewDocked ? EMBEDDED_WEBVIEW_WIDTH : 0}
-                onSelectCat={() => setSelectedSessionId(null)}
+                onSelectCat={() => setSelectedSessionId(workspaceState?.bound_session_id ?? null)}
                 onSelectSession={handleSelectSession}
                 onRunSessionAction={() => {}}
                 onRunOpsAction={() => {}}
@@ -390,15 +397,18 @@ export function CatOffice({
           >
             <div className="min-w-0 flex items-center gap-3">
               <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/60">Cat Office</p>
-              {selectedTitle && (
+              {(selectedTitle || digest.session_id) && (
                 <div className="flex items-center gap-2 rounded-md border border-[#33d1a0]/30 bg-[#33d1a0]/10 px-2.5 py-1">
                   <span className="h-1.5 w-1.5 rounded-full bg-[#33d1a0]" />
-                  <span className="max-w-[120px] truncate text-[11px] font-bold text-[#c8f8e8]">{selectedTitle}</span>
+                  <span className="max-w-[150px] truncate text-[11px] font-bold text-[#c8f8e8]">{selectedTitle ?? digest.title}</span>
                   {selectedTotal > 0 && (
                     <span className="text-[10px] font-bold text-[#c8f8e8]/60">{selectedCompleted}/{selectedTotal}</span>
                   )}
                 </div>
               )}
+              <div className="hidden max-w-[380px] truncate text-[11px] font-semibold text-[#9fb4b8]/76 lg:block">
+                {bindingSessionId ? "Binding session..." : bindingMessage ?? digest.headline}
+              </div>
               <AnimatePresence>
                 {isOpeningWebview && (
                   <motion.span
@@ -418,7 +428,7 @@ export function CatOffice({
                 {webviewSessionId && (
                   <motion.button
                     type="button"
-                    onClick={handleCloseWebview}
+                    onClick={() => handleCloseWebview(false)}
                     className="flex h-8 items-center gap-1.5 rounded-md border border-[#ff8a6b]/40 bg-[#ff8a6b]/15 px-3 text-[11px] font-bold text-[#ff8a6b] backdrop-blur-md hover:border-[#ff8a6b]/60 hover:bg-[#ff8a6b]/25 transition-colors"
                     initial={{ opacity: 0, x: 12 }}
                     animate={{ opacity: 1, x: 0 }}
@@ -432,6 +442,15 @@ export function CatOffice({
                   </motion.button>
                 )}
               </AnimatePresence>
+              {!webviewSessionId && focusedSessionId && (
+                <button
+                  type="button"
+                  onClick={handleOpenWebview}
+                  className="rounded-md border border-[#55d69e]/38 bg-[#55d69e]/14 px-3 py-1.5 text-[11px] font-black text-[#d8fff4] backdrop-blur-md hover:border-[#55d69e]/60 hover:bg-[#55d69e]/22 transition-colors"
+                >
+                  Open Web
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => void onRefreshOfficeState("manual")}

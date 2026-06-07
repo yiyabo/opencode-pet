@@ -3625,6 +3625,7 @@ fn set_window_mode(mode: String, app: AppHandle) {
         let size = match mode.as_str() {
             "chat" => LogicalSize::new(620.0, 480.0),
             "office" => LogicalSize::new(1480.0, 820.0),
+            "picker" => LogicalSize::new(560.0, 640.0),
             "settings" => LogicalSize::new(480.0, 520.0),
             "pets" => LogicalSize::new(480.0, 600.0),
             _ => LogicalSize::new(160.0, 220.0),
@@ -3632,7 +3633,7 @@ fn set_window_mode(mode: String, app: AppHandle) {
         let _ = window.set_size(size);
         let resizable = mode == "chat" || mode == "office";
         let _ = window.set_resizable(resizable);
-        if mode == "office" {
+        if mode == "office" || mode == "picker" {
             recenter_office_window(app);
         }
     }

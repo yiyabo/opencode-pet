@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, type MouseEvent, type PointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { OpenCodeEvent, PetState } from "../types";
+import type { CatSessionDigest, OpenCodeEvent, PetState } from "../types";
 import { isTauriRuntime } from "../tauriEnv";
 
 // Only show the speech bubble for events newer than this; older events stay in
@@ -18,6 +18,7 @@ interface XiaoHeiProps {
   lastEvent: OpenCodeEvent | null;
   isChatOpen: boolean;
   canDragWindow: boolean;
+  digest: CatSessionDigest;
   onClick: () => void;
 }
 
@@ -44,7 +45,7 @@ function spritePose(mood: CatMood): "idle" | "work" | "sleep" {
   return "idle";
 }
 
-export function XiaoHei({ petState, lastEvent, isChatOpen, canDragWindow, onClick }: XiaoHeiProps) {
+export function XiaoHei({ petState, lastEvent, isChatOpen, canDragWindow, digest, onClick }: XiaoHeiProps) {
   const mood = useMemo(() => getMood(petState, lastEvent, isChatOpen), [petState, lastEvent, isChatOpen]);
   const dragStartRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
   const dragTimerRef = useRef<number | null>(null);
@@ -55,6 +56,19 @@ export function XiaoHei({ petState, lastEvent, isChatOpen, canDragWindow, onClic
   const isWorking = petState.progress.status === "working";
   const toolName = petState.progress.current_tool;
   const eventFresh = !!lastEvent && Date.now() - lastEvent.timestamp < FRESH_WINDOW_MS;
+  const bubbleText = isChatOpen
+    ? digest.headline
+    : eventFresh && lastEvent?.summary
+      ? lastEvent.summary
+      : digest.phase === "ready" && petState.progress.status === "idle"
+        ? ""
+        : digest.headline;
+  const chipText = isWorking && toolName ? toolName :
+    digest.todo_total > 0 ? `${digest.todo_completed}/${digest.todo_total}` :
+    petState.progress.status === "error"     ? "error" :
+    petState.progress.status === "completed" ? "done ✓" :
+    digest.phase === "unbound" ? "bind" :
+    mood === "sleeping" ? "sleeping" : "idle";
 
   const sprite = `/pets/sprites/tuxedo-${spritePose(mood)}.png`;
 
@@ -172,15 +186,15 @@ export function XiaoHei({ petState, lastEvent, isChatOpen, canDragWindow, onClic
       className={`relative flex flex-col items-center select-none border-0 bg-transparent p-0 outline-none group ${
         canDragWindow ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
       }`}
-      title={canDragWindow ? "点击打开，拖动移动" : "点击打开面板"}
+      title={canDragWindow ? `点击选择对话，拖动移动。${digest.detail}` : `点击选择对话。${digest.detail}`}
       data-no-drag
     >
       {/* Speech bubble — ring opacity signals priority: /55 for error/success, /40 for neutral */}
-      {(isChatOpen || (eventFresh && !!lastEvent?.summary)) && (
-        <div className={`absolute -top-6 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-xl bg-[#0b1416]/95 px-2.5 py-1 text-[9px] font-semibold text-[#d8fff4] shadow-[0_4px_14px_rgba(0,0,0,0.55)] ring-1 max-w-[150px] truncate z-10 ${
+      {!!bubbleText && (
+        <div className={`absolute -top-6 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-xl bg-[#0b1416]/95 px-2.5 py-1 text-[9px] font-semibold text-[#d8fff4] shadow-[0_4px_14px_rgba(0,0,0,0.55)] ring-1 max-w-[170px] truncate z-10 ${
           mood === "error" ? "ring-[#e8755f]/55" : mood === "success" ? "ring-[#55d69e]/55" : "ring-[#33d1a0]/40"
         }`}>
-          {isChatOpen ? "聊天中..." : lastEvent?.summary}
+          {bubbleText}
           <span className="absolute -bottom-[6px] left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-[#0b1416]/95" />
         </div>
       )}
@@ -201,12 +215,10 @@ export function XiaoHei({ petState, lastEvent, isChatOpen, canDragWindow, onClic
         isWorking              ? "bg-blue-500/20 text-blue-300" :
         petState.progress.status === "error"     ? "bg-red-500/20 text-red-300" :
         petState.progress.status === "completed" ? "bg-green-500/20 text-green-300" :
+        digest.phase === "unbound" ? "bg-[#ffd166]/15 text-[#ffd166]/80" :
         "bg-white/5 text-white/25"
       }`}>
-        {isWorking && toolName ? toolName :
-         petState.progress.status === "error"     ? "error" :
-         petState.progress.status === "completed" ? "done ✓" :
-         mood === "sleeping" ? "sleeping" : "idle"}
+        {chipText}
       </div>
     </button>
   );

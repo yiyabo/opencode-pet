@@ -28,6 +28,9 @@ button,
 [type="reset"] {
   -webkit-appearance: none;
   appearance: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
 }
 
 /* Always-visible scrollbar */
