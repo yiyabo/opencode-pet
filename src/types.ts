@@ -47,6 +47,8 @@ export interface PetConfig {
   project_path: string;
   db_path: string;
   image_path?: string;
+  bound_session_id?: string;
+  coat?: "tuxedo" | "orange" | "calico" | "gray" | string;
   sound_enabled: boolean;
 }
 
@@ -74,7 +76,7 @@ export interface OfficeSyncState {
   error?: string;
 }
 
-export type WatchMode = "latest" | "bound";
+export type WatchMode = "unbound" | "bound" | "latest";
 
 export interface OpenCodeHealthItem {
   level: "info" | "success" | "warning" | "error" | string;
@@ -144,7 +146,7 @@ export interface OpenCodeWorkspaceState {
   watch_mode: WatchMode | string;
   bound_session_id?: string;
   session?: Session;
-  session_status: "missing" | "latest" | "bound" | "server-mismatch" | string;
+  session_status: "missing" | "latest" | "bound" | "server-only" | "server-mismatch" | string;
   session_on_server?: boolean;
   server_session?: OpenCodeServerSession;
   session_directory_matches?: boolean;
@@ -173,7 +175,7 @@ export interface OpenCodeSessionLink {
 }
 
 export interface OpenCodeAlignmentResult {
-  action: "kept" | "rebound" | "bound" | string;
+  action: "kept" | "rebound" | "bound" | "created" | string;
   message: string;
   previous_session_id?: string;
   selected_session_id?: string;
@@ -237,6 +239,18 @@ export interface OpenCodeActivityItem {
   idle_ms?: number;
   total_tools: number;
   completed_tools: number;
+  ai_summary?: OpenCodeSessionSummary;
+}
+
+export interface OpenCodeSessionSummary {
+  session_id: string;
+  fingerprint: string;
+  summary: string;
+  source: "local-ai" | "rule" | string;
+  status: "ready" | "pending" | "fallback" | string;
+  provider?: string;
+  generated_at_ms: number;
+  error?: string;
 }
 
 export interface OpenCodeAttentionItem {
@@ -250,6 +264,49 @@ export interface OpenCodeAttentionItem {
   action: string;
   action_kind: "fix" | "continue" | "retry-dispatch" | "attach" | "web" | "focus" | "review" | string;
   timestamp: number;
+}
+
+export type CatSessionDigestPhase =
+  | "unbound"
+  | "offline"
+  | "working"
+  | "waiting"
+  | "blocked"
+  | "completed"
+  | "ready";
+
+export interface CatSessionDigest {
+  session_id?: string;
+  title: string;
+  phase: CatSessionDigestPhase;
+  headline: string;
+  detail: string;
+  todo_completed: number;
+  todo_total: number;
+  active_todo?: string;
+  current_tool?: string;
+  last_signal?: string;
+  next_action_label: string;
+  next_action_summary: string;
+  updated_at?: number;
+}
+
+export interface SessionChoice {
+  id: string;
+  title: string;
+  directory?: string;
+  status: string;
+  phase: string;
+  summary: string;
+  last_signal: string;
+  is_bound: boolean;
+  is_current: boolean;
+  is_bindable: boolean;
+  is_connected: boolean;
+  todo_completed: number;
+  todo_total: number;
+  active_todo?: string;
+  updated_at?: number;
 }
 
 export interface ChatRequest {

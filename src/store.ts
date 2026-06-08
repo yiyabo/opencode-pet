@@ -15,6 +15,7 @@ import type {
   OpenCodeLaunchResult,
   OpenCodeOfficeSnapshot,
   OpenCodeSessionLink,
+  OpenCodeSessionSummary,
   OpenCodeStreamState,
   OpenCodeWorkspaceState,
   TodoItem,
@@ -22,13 +23,14 @@ import type {
 import { isTauriRuntime } from "./tauriEnv";
 
 let workspaceRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+const WORKSPACE_REFRESH_DEBOUNCE_MS = 1500;
 
 function scheduleWorkspaceRefresh(refresh: () => Promise<unknown>) {
   if (workspaceRefreshTimer) return;
   workspaceRefreshTimer = setTimeout(() => {
     workspaceRefreshTimer = null;
     void refresh();
-  }, 350);
+  }, WORKSPACE_REFRESH_DEBOUNCE_MS);
 }
 
 interface PetStore {
@@ -55,6 +57,8 @@ interface PetStore {
   fetchSessions: () => Promise<void>;
   fetchBoundSessionId: () => Promise<void>;
   bindSession: (sessionId: string | null) => Promise<OpenCodeAlignmentResult | null>;
+  bindPetSession: (petId: string, sessionId: string | null) => Promise<OpenCodeAlignmentResult | null>;
+  createPetSession: (petId: string, title?: string) => Promise<OpenCodeAlignmentResult | null>;
   bindSharedServerSession: () => Promise<OpenCodeWorkspaceState | null>;
   fetchMessages: (sessionId: string) => Promise<void>;
   refreshOpenCodeState: () => Promise<void>;
@@ -113,7 +117,19 @@ const defaultOfficeSync: OfficeSyncState = {
 };
 
 const PREVIEW_DEFAULT_SESSION_ID = "preview-frontend";
-let previewBoundSessionId = PREVIEW_DEFAULT_SESSION_ID;
+const PREVIEW_PROJECT_DIR = "/workspace/opencode-pet";
+const PREVIEW_TAURI_DIR = `${PREVIEW_PROJECT_DIR}/src-tauri`;
+const PREVIEW_DB_PATH = `${PREVIEW_PROJECT_DIR}/.opencode`;
+let previewBoundSessionId: string | null = PREVIEW_DEFAULT_SESSION_ID;
+
+function defaultPreviewPetConfigs(): PetConfig[] {
+  return [
+    { id: "xiaohei", name: "XiaoHei", project_path: PREVIEW_PROJECT_DIR, db_path: PREVIEW_DB_PATH, image_path: undefined, bound_session_id: previewBoundSessionId ?? undefined, coat: "tuxedo", sound_enabled: true },
+    { id: "mikan", name: "Mikan", project_path: PREVIEW_PROJECT_DIR, db_path: PREVIEW_DB_PATH, image_path: undefined, bound_session_id: undefined, coat: "orange", sound_enabled: true },
+    { id: "cali", name: "Cali", project_path: PREVIEW_PROJECT_DIR, db_path: PREVIEW_DB_PATH, image_path: undefined, bound_session_id: undefined, coat: "calico", sound_enabled: true },
+    { id: "goma", name: "Goma", project_path: PREVIEW_PROJECT_DIR, db_path: PREVIEW_DB_PATH, image_path: undefined, bound_session_id: undefined, coat: "gray", sound_enabled: true },
+  ];
+}
 
 function applyPreviewSnapshot(
   snapshot: OpenCodeOfficeSnapshot,
@@ -166,7 +182,7 @@ function previewLaunchResult(
   const sessionId = snapshot.current_session?.id;
   const title = snapshot.current_session?.title ?? sessionId ?? "session";
   const serverUrl = snapshot.workspace_state.server_url;
-  const projectDir = snapshot.workspace_state.project_dir ?? "/Users/apple/code/opencode-pet";
+  const projectDir = snapshot.workspace_state.project_dir ?? PREVIEW_PROJECT_DIR;
   return {
     action,
     status: "success",
@@ -198,7 +214,7 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
     {
       id: "preview-frontend",
       title: "Pixel office polish",
-      directory: "/Users/apple/code/opencode-pet",
+      directory: PREVIEW_PROJECT_DIR,
       message_count: 42,
       prompt_tokens: 18420,
       completion_tokens: 9320,
@@ -209,7 +225,7 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
     {
       id: "preview-dispatch",
       title: "OpenCode handoff route",
-      directory: "/Users/apple/code/opencode-pet",
+      directory: PREVIEW_PROJECT_DIR,
       message_count: 18,
       prompt_tokens: 9200,
       completion_tokens: 4100,
@@ -220,7 +236,7 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
     {
       id: "preview-tests",
       title: "Tauri validation sweep",
-      directory: "/Users/apple/code/opencode-pet/src-tauri",
+      directory: PREVIEW_TAURI_DIR,
       message_count: 11,
       prompt_tokens: 6400,
       completion_tokens: 2700,
@@ -231,7 +247,7 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
     {
       id: "preview-quiet",
       title: "Quiet dispatch follow-up",
-      directory: "/Users/apple/code/opencode-pet",
+      directory: PREVIEW_PROJECT_DIR,
       message_count: 9,
       prompt_tokens: 5200,
       completion_tokens: 1600,
@@ -240,7 +256,10 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
       created_at: now - 1_200_000,
     },
   ];
-  const selectedSession = sessions.find((item) => item.id === previewBoundSessionId) ?? sessions[0];
+  const boundPreviewSessionId = previewBoundSessionId;
+  const selectedSession = boundPreviewSessionId
+    ? sessions.find((item) => item.id === boundPreviewSessionId) ?? sessions[0]
+    : sessions[0];
   const selectedSessionId = selectedSession.id;
   const latestEvent: OpenCodeEvent = {
     id: "preview-event-tool-started",
@@ -381,14 +400,14 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
       { key: "server", label: "Server", status: "success", detail: "Preview server online", source: "preview", checked_at_ms: now - 20, duration_ms: 12 },
       { key: "stream", label: "Stream", status: "success", detail: "Preview SSE connected", source: "preview", checked_at_ms: now - 8, duration_ms: 6 },
     ],
-    database_path: "/Users/apple/code/opencode-pet/.opencode",
+    database_path: PREVIEW_DB_PATH,
     database_status: "connected",
     database_valid: true,
-    watched_paths: ["/Users/apple/code/opencode-pet/.opencode"],
-    watch_mode: "bound",
-    bound_session_id: selectedSessionId,
+    watched_paths: [PREVIEW_DB_PATH],
+    watch_mode: boundPreviewSessionId ? "bound" : "unbound",
+    bound_session_id: boundPreviewSessionId ?? undefined,
     session: selectedSession,
-    session_status: "bound",
+    session_status: boundPreviewSessionId ? "bound" : "latest",
     session_on_server: true,
     server_session: selectedServerSession,
     session_directory_matches: true,
@@ -400,7 +419,7 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
       last_event_at: now - 24_000,
       event_count: 17,
     },
-    project_dir: "/Users/apple/code/opencode-pet",
+    project_dir: PREVIEW_PROJECT_DIR,
     progress: {
       total_tools: 6,
       completed_tools: selectedSessionId === "preview-frontend" ? 4 : 6,
@@ -436,10 +455,10 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
       id: "preview-frontend",
       local: sessions[0],
       server: selectedSessionId === "preview-frontend" ? workspaceState.server_session : undefined,
-      status: selectedSessionId === "preview-frontend" ? "linked" : "local-only",
-      directory_matches: selectedSessionId === "preview-frontend",
+      status: boundPreviewSessionId === "preview-frontend" ? "linked" : "local-only",
+      directory_matches: boundPreviewSessionId === "preview-frontend",
       title_matches: true,
-      is_bound: selectedSessionId === "preview-frontend",
+      is_bound: boundPreviewSessionId === "preview-frontend",
       is_current: selectedSessionId === "preview-frontend",
       updated_at: now - 24_000,
     },
@@ -447,10 +466,10 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
       id: "preview-dispatch",
       local: sessions[1],
       server: selectedSessionId === "preview-dispatch" ? workspaceState.server_session : undefined,
-      status: selectedSessionId === "preview-dispatch" ? "linked" : "local-only",
-      directory_matches: selectedSessionId === "preview-dispatch",
+      status: boundPreviewSessionId === "preview-dispatch" ? "linked" : "local-only",
+      directory_matches: boundPreviewSessionId === "preview-dispatch",
       title_matches: true,
-      is_bound: selectedSessionId === "preview-dispatch",
+      is_bound: boundPreviewSessionId === "preview-dispatch",
       is_current: selectedSessionId === "preview-dispatch",
       updated_at: now - 7 * 60_000,
     },
@@ -458,10 +477,10 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
       id: "preview-tests",
       local: sessions[2],
       server: selectedSessionId === "preview-tests" ? workspaceState.server_session : undefined,
-      status: selectedSessionId === "preview-tests" ? "linked" : "directory-diff",
-      directory_matches: selectedSessionId === "preview-tests",
+      status: boundPreviewSessionId === "preview-tests" ? "linked" : "directory-diff",
+      directory_matches: boundPreviewSessionId === "preview-tests",
       title_matches: true,
-      is_bound: selectedSessionId === "preview-tests",
+      is_bound: boundPreviewSessionId === "preview-tests",
       is_current: selectedSessionId === "preview-tests",
       updated_at: now - 18 * 60_000,
     },
@@ -469,10 +488,10 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
       id: "preview-quiet",
       local: sessions[3],
       server: selectedSessionId === "preview-quiet" ? workspaceState.server_session : undefined,
-      status: selectedSessionId === "preview-quiet" ? "linked" : "local-only",
-      directory_matches: selectedSessionId === "preview-quiet",
+      status: boundPreviewSessionId === "preview-quiet" ? "linked" : "local-only",
+      directory_matches: boundPreviewSessionId === "preview-quiet",
       title_matches: true,
-      is_bound: selectedSessionId === "preview-quiet",
+      is_bound: boundPreviewSessionId === "preview-quiet",
       is_current: selectedSessionId === "preview-quiet",
       updated_at: now - 11 * 60_000,
     },
@@ -481,7 +500,7 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
     {
       id: "preview-frontend",
       title: "Pixel office polish",
-      directory: "/Users/apple/code/opencode-pet",
+      directory: PREVIEW_PROJECT_DIR,
       status: "working",
       phase: "tool-running",
       status_reason: "OpenCode is running pnpm build while rendering session-aware desk screens",
@@ -491,7 +510,7 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
       next_action_reason: "OpenCode is actively working; ask it to continue and report the next concrete step",
       link_status: "linked",
       source: "local+server",
-      is_bound: selectedSessionId === "preview-frontend",
+      is_bound: boundPreviewSessionId === "preview-frontend",
       is_current: selectedSessionId === "preview-frontend",
       is_on_server: selectedSessionId === "preview-frontend",
       message_count: 42,
@@ -511,7 +530,7 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
     {
       id: "preview-dispatch",
       title: "OpenCode handoff route",
-      directory: "/Users/apple/code/opencode-pet",
+      directory: PREVIEW_PROJECT_DIR,
       status: "followed",
       phase: "dispatch-followed",
       status_reason: "Dispatch was accepted and later OpenCode activity was observed",
@@ -519,9 +538,9 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
       next_action_kind: "review",
       next_action_label: "Review",
       next_action_reason: "The dispatch has follow-up activity; review the session before sending more work",
-      link_status: selectedSessionId === "preview-dispatch" ? "linked" : "local-only",
-      source: selectedSessionId === "preview-dispatch" ? "local+server" : "local",
-      is_bound: selectedSessionId === "preview-dispatch",
+      link_status: boundPreviewSessionId === "preview-dispatch" ? "linked" : "local-only",
+      source: boundPreviewSessionId === "preview-dispatch" ? "local+server" : "local",
+      is_bound: boundPreviewSessionId === "preview-dispatch",
       is_current: selectedSessionId === "preview-dispatch",
       is_on_server: selectedSessionId === "preview-dispatch",
       message_count: 18,
@@ -541,7 +560,7 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
     {
       id: "preview-tests",
       title: "Tauri validation sweep",
-      directory: "/Users/apple/code/opencode-pet/src-tauri",
+      directory: PREVIEW_TAURI_DIR,
       status: "drift",
       phase: "sync-drift",
       status_reason: "Local SQLite session and OpenCode server metadata differ",
@@ -549,9 +568,9 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
       next_action_kind: "focus",
       next_action_label: "Align session",
       next_action_reason: "Local SQLite and OpenCode server metadata should be aligned before dispatch",
-      link_status: selectedSessionId === "preview-tests" ? "linked" : "directory-diff",
+      link_status: boundPreviewSessionId === "preview-tests" ? "linked" : "directory-diff",
       source: "local+server",
-      is_bound: selectedSessionId === "preview-tests",
+      is_bound: boundPreviewSessionId === "preview-tests",
       is_current: selectedSessionId === "preview-tests",
       is_on_server: true,
       message_count: 11,
@@ -569,7 +588,7 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
     {
       id: "preview-quiet",
       title: "Quiet dispatch follow-up",
-      directory: "/Users/apple/code/opencode-pet",
+      directory: PREVIEW_PROJECT_DIR,
       status: "quiet",
       phase: "dispatch-quiet",
       status_reason: "Dispatch was accepted but no later OpenCode activity was observed",
@@ -577,9 +596,9 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
       next_action_kind: "retry-dispatch",
       next_action_label: "Retry dispatch",
       next_action_reason: "The previous dispatch did not produce observable OpenCode activity",
-      link_status: selectedSessionId === "preview-quiet" ? "linked" : "local-only",
-      source: selectedSessionId === "preview-quiet" ? "local+server" : "local",
-      is_bound: selectedSessionId === "preview-quiet",
+      link_status: boundPreviewSessionId === "preview-quiet" ? "linked" : "local-only",
+      source: boundPreviewSessionId === "preview-quiet" ? "local+server" : "local",
+      is_bound: boundPreviewSessionId === "preview-quiet",
       is_current: selectedSessionId === "preview-quiet",
       is_on_server: selectedSessionId === "preview-quiet",
       message_count: 9,
@@ -664,7 +683,7 @@ function makePreviewOfficeSnapshot(now = Date.now()): OpenCodeOfficeSnapshot {
       last_event: latestEvent,
     },
     sessions,
-    bound_session_id: selectedSessionId,
+    bound_session_id: boundPreviewSessionId ?? undefined,
     current_session: selectedSession,
     messages,
     event_history: eventHistory,
@@ -688,7 +707,7 @@ export const usePetStore = create<PetStore>((set, get) => ({
   activityItems: [],
   attentionItems: [],
   officeSync: defaultOfficeSync,
-  petConfigs: [],
+  petConfigs: defaultPreviewPetConfigs(),
   settings: defaultSettings,
   isLoading: false,
   error: null,
@@ -765,7 +784,7 @@ export const usePetStore = create<PetStore>((set, get) => ({
 
   bindSession: async (sessionId: string | null) => {
     if (!isTauriRuntime()) {
-      previewBoundSessionId = sessionId?.trim() || PREVIEW_DEFAULT_SESSION_ID;
+      previewBoundSessionId = sessionId?.trim() || null;
       const previousSessionId = get().boundSessionId ?? undefined;
       const snapshot = makePreviewOfficeSnapshot();
       applyPreviewSnapshot(snapshot, set);
@@ -788,6 +807,102 @@ export const usePetStore = create<PetStore>((set, get) => ({
       await get().fetchSessions();
       await get().fetchOpenCodeActivity();
       await get().fetchOpenCodeAttention();
+      await get().fetchAllTodos();
+      await get().fetchPetConfigs();
+      return result;
+    } catch (err) {
+      set({ error: String(err) });
+      return null;
+    }
+  },
+
+  bindPetSession: async (petId: string, sessionId: string | null) => {
+    if (!isTauriRuntime()) {
+      previewBoundSessionId = sessionId?.trim() || null;
+      const previousSessionId = get().petConfigs.find((pet) => pet.id === petId)?.bound_session_id;
+      set((state) => ({
+        petConfigs: state.petConfigs.map((pet) =>
+          pet.id === petId ? { ...pet, bound_session_id: previewBoundSessionId ?? undefined } : pet
+        ),
+        boundSessionId: previewBoundSessionId,
+      }));
+      const snapshot = makePreviewOfficeSnapshot();
+      applyPreviewSnapshot(snapshot, set);
+      set((state) => ({
+        petConfigs: state.petConfigs.map((pet) =>
+          pet.id === petId ? { ...pet, bound_session_id: previewBoundSessionId ?? undefined } : pet
+        ),
+      }));
+      return previewAlignmentResult(snapshot, sessionId ? "bound" : "unbound", previousSessionId);
+    }
+    try {
+      const result = await invoke<OpenCodeAlignmentResult>("bind_pet_session", { petId, sessionId });
+      set({
+        workspaceState: result.workspace_state,
+        sessionLinks: result.session_links,
+        boundSessionId: result.workspace_state.bound_session_id ?? null,
+        currentSession: result.workspace_state.session ?? null,
+        error: null,
+      });
+      if (result.workspace_state.session?.id) {
+        await get().fetchMessages(result.workspace_state.session.id);
+      } else {
+        set({ messages: [] });
+      }
+      await get().fetchPetConfigs();
+      await get().fetchSessions();
+      await get().fetchOpenCodeActivity();
+      await get().fetchOpenCodeAttention();
+      await get().fetchAllTodos();
+      return result;
+    } catch (err) {
+      set({ error: String(err) });
+      return null;
+    }
+  },
+
+  createPetSession: async (petId: string, title?: string) => {
+    if (!isTauriRuntime()) {
+      const previousSessionId = get().petConfigs.find((pet) => pet.id === petId)?.bound_session_id;
+      previewBoundSessionId = "preview-frontend";
+      set((state) => ({
+        petConfigs: state.petConfigs.map((pet) =>
+          pet.id === petId ? { ...pet, bound_session_id: previewBoundSessionId ?? undefined } : pet
+        ),
+        boundSessionId: previewBoundSessionId,
+      }));
+      const snapshot = makePreviewOfficeSnapshot();
+      applyPreviewSnapshot(snapshot, set);
+      set((state) => ({
+        petConfigs: state.petConfigs.map((pet) =>
+          pet.id === petId ? { ...pet, bound_session_id: previewBoundSessionId ?? undefined } : pet
+        ),
+      }));
+      return {
+        ...previewAlignmentResult(snapshot, "created", previousSessionId),
+        action: "created",
+        message: `Preview created ${title?.trim() || snapshot.current_session?.title || "new session"} and bound it to this cat`,
+      };
+    }
+    try {
+      const result = await invoke<OpenCodeAlignmentResult>("create_pet_session", { petId, title });
+      set({
+        workspaceState: result.workspace_state,
+        sessionLinks: result.session_links,
+        boundSessionId: result.workspace_state.bound_session_id ?? null,
+        currentSession: result.workspace_state.session ?? null,
+        error: null,
+      });
+      if (result.workspace_state.session?.id) {
+        await get().fetchMessages(result.workspace_state.session.id);
+      } else {
+        set({ messages: [] });
+      }
+      await get().fetchPetConfigs();
+      await get().fetchSessions();
+      await get().fetchOpenCodeActivity();
+      await get().fetchOpenCodeAttention();
+      await get().fetchAllTodos();
       return result;
     } catch (err) {
       set({ error: String(err) });
@@ -875,7 +990,12 @@ export const usePetStore = create<PetStore>((set, get) => ({
     const startedAt = Date.now();
     const sequence = get().officeSync.sequence + 1;
     if (!isTauriRuntime()) {
-      previewBoundSessionId = get().boundSessionId ?? previewBoundSessionId;
+      const currentBoundSessionId = get().boundSessionId;
+      if (currentBoundSessionId) {
+        previewBoundSessionId = currentBoundSessionId;
+      } else if (get().workspaceState) {
+        previewBoundSessionId = null;
+      }
       const snapshot = makePreviewOfficeSnapshot(startedAt);
       set((state) => ({
         petState: snapshot.pet_state,
@@ -1207,6 +1327,7 @@ export const usePetStore = create<PetStore>((set, get) => ({
       await get().fetchSessionLinks();
       await get().fetchOpenCodeActivity();
       await get().fetchOpenCodeAttention();
+      await get().fetchPetConfigs();
       return true;
     } catch (err) {
       set({ error: String(err) });
@@ -1216,7 +1337,7 @@ export const usePetStore = create<PetStore>((set, get) => ({
 
   findDatabases: async () => {
     if (!isTauriRuntime()) {
-      return ["/Users/apple/code/opencode-pet/.opencode"];
+      return [PREVIEW_DB_PATH];
     }
     try {
       const databases = await invoke<string[]>("find_opencode_databases");
@@ -1308,11 +1429,19 @@ export const usePetStore = create<PetStore>((set, get) => ({
             }
           : state.workspaceState,
       }));
-      scheduleWorkspaceRefresh(() => get().refreshOfficeState("stream"));
     });
 
     listen<Record<string, TodoItem[]>>("todos-changed", (event) => {
       set({ sessionTodos: event.payload });
+    });
+
+    listen<OpenCodeSessionSummary>("session-summary-updated", (event) => {
+      const summary = event.payload;
+      set((state) => ({
+        activityItems: state.activityItems.map((item) =>
+          item.id === summary.session_id ? { ...item, ai_summary: summary } : item
+        ),
+      }));
     });
   },
 
@@ -1363,6 +1492,10 @@ export const usePetStore = create<PetStore>((set, get) => ({
   },
 
   fetchPetConfigs: async () => {
+    if (!isTauriRuntime()) {
+      set({ petConfigs: defaultPreviewPetConfigs(), error: null });
+      return;
+    }
     try {
       const configs = await invoke<PetConfig[]>("get_pet_configs");
       set({ petConfigs: configs, error: null });
@@ -1402,12 +1535,29 @@ export const usePetStore = create<PetStore>((set, get) => ({
   },
 
   switchPet: async (configId: string) => {
+    if (!isTauriRuntime()) {
+      const boundSessionId = get().petConfigs.find((pet) => pet.id === configId)?.bound_session_id ?? null;
+      previewBoundSessionId = boundSessionId;
+      const snapshot = makePreviewOfficeSnapshot();
+      set({
+        petState: { ...snapshot.pet_state, current_pet_id: configId },
+        boundSessionId,
+        currentSession: snapshot.current_session ?? null,
+        workspaceState: snapshot.workspace_state,
+        sessionLinks: snapshot.session_links,
+        activityItems: snapshot.activity_items,
+        attentionItems: snapshot.attention_items,
+        error: null,
+      });
+      return;
+    }
     try {
       await invoke("switch_pet", { configId });
-      set({ boundSessionId: null });
       await get().fetchPetState();
       await get().fetchSessions();
       await get().fetchCurrentSession();
+      await get().fetchBoundSessionId();
+      await get().fetchPetConfigs();
       await get().fetchWorkspaceState();
       await get().fetchSessionLinks();
       await get().fetchOpenCodeActivity();

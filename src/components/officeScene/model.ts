@@ -2,10 +2,15 @@ import type {
   OpenCodeActivityItem,
   OpenCodeAttentionItem,
   OpenCodeSessionLink,
+  PetConfig,
+  TodoItem,
 } from "../../types";
+import { activityHeadline } from "../../opencodeDigest";
 import { PIXEL_ALERT } from "./layout";
 import { compactDeskLabel, shortSessionId } from "./text";
 import type { Desk } from "./types";
+
+const CAT_COATS = ["tuxedo", "orange", "calico", "gray"] as const;
 
 function deskStatus(link?: OpenCodeSessionLink): Desk["status"] {
   if (!link) return "empty";
@@ -102,8 +107,99 @@ export function orderedActivityItems(activityItems: OpenCodeActivityItem[] = [])
 export function visibleSessionCount(
   activityItems: OpenCodeActivityItem[] = [],
   sessionLinks: OpenCodeSessionLink[] = [],
+  pets: PetConfig[] = [],
 ): number {
+  if (pets.length > 0) return pets.length;
   return activityItems.length > 0 ? orderedActivityItems(activityItems).length : orderedSessionLinks(sessionLinks).length;
+}
+
+function petCoat(pet: PetConfig, index: number): Desk["worker"] {
+  if (pet.coat && CAT_COATS.includes(pet.coat as typeof CAT_COATS[number])) {
+    return pet.coat as Desk["worker"];
+  }
+  return CAT_COATS[index % CAT_COATS.length];
+}
+
+export function petDesks(
+  baseDesks: Desk[],
+  pets: PetConfig[] = [],
+  activityItems: OpenCodeActivityItem[] = [],
+  sessionLinks: OpenCodeSessionLink[] = [],
+  focusedSessionId?: string | null,
+  attentionItems: OpenCodeAttentionItem[] = [],
+  sessionTodos: Record<string, TodoItem[]> = {},
+): Desk[] {
+  if (pets.length === 0) {
+    return activityDesks(baseDesks, activityItems, sessionLinks, focusedSessionId, attentionItems, sessionTodos);
+  }
+
+  const activityById = new Map(activityItems.map((item) => [item.id, item]));
+  const linkById = new Map(sessionLinks.map((link) => [link.id, link]));
+
+  return baseDesks.map((desk, index) => {
+    const pet = pets[index];
+    if (!pet) return { ...desk, status: "empty" };
+
+    const worker = petCoat(pet, index);
+    const boundSessionId = pet.bound_session_id;
+    const petLabel = compactDeskLabel(pet.name);
+    if (!boundSessionId) {
+      return {
+        ...desk,
+        label: petLabel,
+        worker,
+        petId: pet.id,
+        petName: pet.name,
+        status: "empty",
+        activityStatus: "empty",
+        active: false,
+        focused: false,
+      };
+    }
+
+    const item = activityById.get(boundSessionId);
+    const link = linkById.get(boundSessionId);
+    const status = item ? deskStatusFromActivity(item) : deskStatus(link);
+    const focused = boundSessionId === focusedSessionId;
+    const attention = attentionForSession(boundSessionId, attentionItems);
+    const todos = sessionTodos[boundSessionId] ?? [];
+    const headline = item ? activityHeadline(item, todos) || item.title : link ? linkTitle(link) : boundSessionId;
+
+    return {
+      ...desk,
+      label: petLabel,
+      accent: deskAccent(status, true, desk.accent),
+      worker,
+      status,
+      activityStatus: item?.status ?? "linked",
+      phase: item?.phase,
+      bubbleHeadline: headline,
+      sessionId: boundSessionId,
+      petId: pet.id,
+      petName: pet.name,
+      detail: shortSessionId(boundSessionId),
+      summary: item?.last_message ?? link?.local?.directory ?? link?.server?.directory,
+      statusReason: item?.status_reason,
+      lastSignal: item?.last_signal,
+      source: item?.source ?? link?.status,
+      toolName: item?.tool_name,
+      model: item?.model ?? link?.server?.model_id,
+      messageCount: item?.message_count ?? link?.local?.message_count ?? link?.server?.message_count,
+      eventType: item?.last_event?.event_type,
+      eventSeverity: item?.last_event?.severity,
+      lastRole: item?.last_role,
+      lastUserMessage: item?.last_user_message,
+      lastAssistantMessage: item?.last_assistant_message,
+      awaitingUser: item?.awaiting_user,
+      idleMs: item?.idle_ms,
+      totalTools: item?.total_tools,
+      completedTools: item?.completed_tools,
+      actionKind: attention?.action_kind,
+      actionLabel: deskActionLabel(attention?.action_kind),
+      active: true,
+      focused,
+    };
+  });
 }
 
 function sessionDesks(
@@ -148,6 +244,7 @@ export function activityDesks(
   fallbackLinks: OpenCodeSessionLink[] = [],
   focusedSessionId?: string | null,
   attentionItems: OpenCodeAttentionItem[] = [],
+  sessionTodos: Record<string, TodoItem[]> = {},
 ): Desk[] {
   if (activityItems.length === 0) return sessionDesks(baseDesks, fallbackLinks, focusedSessionId, attentionItems);
   const uniqueItems = orderedActivityItems(activityItems);
@@ -167,6 +264,7 @@ export function activityDesks(
       status,
       activityStatus: item.status,
       phase: item.phase,
+      bubbleHeadline: activityHeadline(item, sessionTodos[item.id] ?? []),
       sessionId: item.id,
       detail: `${shortSessionId(item.id)} ${item.status === "working" ? "run" : item.source}`,
       summary: item.last_message,

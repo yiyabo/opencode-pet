@@ -16,6 +16,11 @@ npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
 
+# Local environment
+.env
+.env.*
+!.env.example
+
 # Editor / OS
 .DS_Store
 .vscode/*
@@ -24,7 +29,14 @@ pnpm-debug.log*
 
 # Tooling scratch output
 .playwright-mcp/
+.claude/
+.sisyphus/
+.pnpm-store/
+.spec-workflow/
 **/__pycache__/
 
 # Raw AI-generated sprite candidates (pre-processing); processed sprites are committed
 public/pets/generated/
+
+# Local screenshots and ad-hoc captures
+current-state.png

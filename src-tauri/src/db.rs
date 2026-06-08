@@ -199,41 +199,6 @@ fn load_modern_parts(conn: &Connection, session_id: &str) -> Result<HashMap<Stri
     Ok(grouped_parts)
 }
 
-pub fn get_latest_session(db_path: &Path) -> Result<Session> {
-    let conn = open_database(db_path)?;
-
-    match get_schema(&conn)? {
-        DatabaseSchema::Legacy => {
-            let mut stmt = conn.prepare(
-                "SELECT id, title, NULL as directory, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at
-                 FROM sessions
-                 ORDER BY updated_at DESC
-                 LIMIT 1",
-            )?;
-
-            stmt.query_row([], parse_session_row)
-        }
-        DatabaseSchema::Modern => {
-            let mut stmt = conn.prepare(
-                "SELECT s.id,
-                        s.title,
-                        s.directory,
-                        CAST((SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) AS INTEGER) AS message_count,
-                        CAST(s.tokens_input AS INTEGER) AS prompt_tokens,
-                        CAST(s.tokens_output AS INTEGER) AS completion_tokens,
-                        s.cost,
-                        s.time_updated,
-                        s.time_created
-                 FROM session s
-                 ORDER BY s.time_updated DESC
-                 LIMIT 1",
-            )?;
-
-            stmt.query_row([], parse_session_row)
-        }
-    }
-}
-
 pub fn get_session(db_path: &Path, session_id: &str) -> Result<Session> {
     let conn = open_database(db_path)?;
 

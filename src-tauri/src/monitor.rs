@@ -10,13 +10,15 @@ pub type WatchedPaths = Arc<Mutex<Vec<PathBuf>>>;
 pub fn start_monitor(app: AppHandle, watched_paths: WatchedPaths) {
     let (tx, rx) = channel();
 
-    let mut watcher =
-        RecommendedWatcher::new(tx, Config::default()).expect("Failed to create file watcher");
+    let Ok(mut watcher) = RecommendedWatcher::new(tx, Config::default()) else {
+        eprintln!("Failed to create file watcher");
+        return;
+    };
 
     {
         let mut paths = watched_paths.lock().unwrap();
         for path in db::find_opencode_database_dirs() {
-            if watcher.watch(&path, RecursiveMode::Recursive).is_ok() {
+            if watcher.watch(&path, RecursiveMode::NonRecursive).is_ok() {
                 paths.push(path);
             }
         }

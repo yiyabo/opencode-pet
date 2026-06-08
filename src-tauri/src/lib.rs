@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::{
+    image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, LogicalSize, Manager, State,
@@ -14,6 +15,7 @@ mod db;
 mod events;
 mod monitor;
 mod opencode_stream;
+mod session_summary;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Session {
@@ -56,6 +58,8 @@ pub struct PetConfig {
     pub project_path: String,
     pub db_path: String,
     pub image_path: Option<String>,
+    pub bound_session_id: Option<String>,
+    pub coat: Option<String>,
     pub sound_enabled: bool,
 }
 
@@ -270,6 +274,7 @@ pub struct OpenCodeActivityItem {
     pub idle_ms: Option<i64>,
     pub total_tools: i32,
     pub completed_tools: i32,
+    pub ai_summary: Option<session_summary::OpenCodeSessionSummary>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -316,9 +321,13 @@ pub struct AppState {
     pub config_dir: Mutex<PathBuf>,
     pub watched_paths: monitor::WatchedPaths,
     pub stream_state: Mutex<OpenCodeStreamState>,
+    pub summary_cache: Mutex<HashMap<String, session_summary::OpenCodeSessionSummary>>,
+    pub summary_inflight: Mutex<HashSet<String>>,
+    pub summary_last_attempt: Mutex<HashMap<String, i64>>,
 }
 
 const EVENT_HISTORY_LIMIT: usize = 40;
+const SUMMARY_RETRY_INTERVAL_MS: i64 = 90_000;
 
 fn event_history_snapshot(state: &AppState) -> Vec<events::OpenCodeEvent> {
     state.event_history.lock().unwrap().clone()
@@ -358,11 +367,273 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+fn summary_cache_path(config_dir: &PathBuf) -> PathBuf {
+    config_dir.join("session-summaries.json")
+}
+
+fn load_summary_cache(config_dir: &PathBuf) -> HashMap<String, session_summary::OpenCodeSessionSummary> {
+    let config_path = summary_cache_path(config_dir);
+    if let Ok(json) = std::fs::read_to_string(config_path) {
+        serde_json::from_str(&json).unwrap_or_default()
+    } else {
+        HashMap::new()
+    }
+}
+
+fn save_summary_cache(
+    cache: &HashMap<String, session_summary::OpenCodeSessionSummary>,
+    config_dir: &PathBuf,
+) -> Result<(), String> {
+    let config_path = summary_cache_path(config_dir);
+    let json = serde_json::to_string_pretty(cache).map_err(|err| err.to_string())?;
+    std::fs::write(config_path, json).map_err(|err| err.to_string())
+}
+
+fn summary_for_session(
+    app: Option<AppHandle>,
+    state: &AppState,
+    session: &Session,
+    messages: &[Message],
+    todos: &[TodoItem],
+) -> Option<session_summary::OpenCodeSessionSummary> {
+    let fingerprint = session_summary::fingerprint(session, messages, todos);
+    let cached = state.summary_cache.lock().unwrap().get(&session.id).cloned();
+    if cached
+        .as_ref()
+        .is_some_and(|summary| summary.fingerprint == fingerprint)
+    {
+        return cached;
+    }
+
+    let fallback_summary = session_summary::rule_summary(session, messages, todos);
+    let pending = session_summary::OpenCodeSessionSummary {
+        session_id: session.id.clone(),
+        fingerprint: fingerprint.clone(),
+        summary: cached
+            .as_ref()
+            .map(|summary| summary.summary.clone())
+            .filter(|summary| !summary.trim().is_empty())
+            .unwrap_or(fallback_summary.clone()),
+        source: cached
+            .as_ref()
+            .map(|summary| summary.source.clone())
+            .unwrap_or_else(|| "rule".to_string()),
+        status: "pending".to_string(),
+        provider: cached.and_then(|summary| summary.provider),
+        generated_at_ms: now_ms(),
+        error: None,
+    };
+
+    {
+        let mut cache = state.summary_cache.lock().unwrap();
+        cache.insert(session.id.clone(), pending.clone());
+    }
+
+    if let Some(app) = app {
+        spawn_summary_generation(
+            app,
+            session_summary::SummaryGenerationInput {
+                session: session.clone(),
+                messages: messages.to_vec(),
+                todos: todos.to_vec(),
+                fingerprint,
+                fallback_summary,
+            },
+        );
+    }
+
+    Some(pending)
+}
+
+fn spawn_summary_generation(app: AppHandle, input: session_summary::SummaryGenerationInput) {
+    let session_id = input.session.id.clone();
+    let fingerprint = input.fingerprint.clone();
+    let inflight_key = format!("{session_id}:{fingerprint}");
+    {
+        let state = app.state::<AppState>();
+        let now = now_ms();
+        {
+            let mut last_attempt = state.summary_last_attempt.lock().unwrap();
+            if last_attempt
+                .get(&session_id)
+                .is_some_and(|previous| now.saturating_sub(*previous) < SUMMARY_RETRY_INTERVAL_MS)
+            {
+                return;
+            }
+            last_attempt.insert(session_id.clone(), now);
+        }
+        let mut inflight = state.summary_inflight.lock().unwrap();
+        if !inflight.insert(inflight_key.clone()) {
+            return;
+        }
+    }
+
+    tauri::async_runtime::spawn(async move {
+        let generated = match session_summary::generate_local_summary(input.clone()).await {
+            Ok(summary) => summary,
+            Err(err) => session_summary::fallback_summary(&input, "fallback", Some(err)),
+        };
+
+        {
+            let state = app.state::<AppState>();
+            let config_dir = state.config_dir.lock().unwrap().clone();
+            {
+                let mut cache = state.summary_cache.lock().unwrap();
+                cache.insert(session_id.clone(), generated.clone());
+                if let Err(err) = save_summary_cache(&cache, &config_dir) {
+                    eprintln!("Failed to save session summary cache: {err}");
+                }
+            }
+            state.summary_inflight.lock().unwrap().remove(&inflight_key);
+        }
+
+        if let Err(err) = app.emit("session-summary-updated", generated) {
+            eprintln!("Failed to emit session-summary-updated: {err}");
+        }
+    });
+}
+
+fn default_project_path() -> String {
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .to_string_lossy()
+        .to_string()
+}
+
+fn default_pet_configs() -> Vec<PetConfig> {
+    let project_path = default_project_path();
+    [
+        ("xiaohei", "XiaoHei", "tuxedo"),
+        ("mikan", "Mikan", "orange"),
+        ("cali", "Cali", "calico"),
+        ("goma", "Goma", "gray"),
+    ]
+    .into_iter()
+    .map(|(id, name, coat)| PetConfig {
+        id: id.to_string(),
+        name: name.to_string(),
+        project_path: project_path.clone(),
+        db_path: String::new(),
+        image_path: None,
+        bound_session_id: None,
+        coat: Some(coat.to_string()),
+        sound_enabled: true,
+    })
+    .collect()
+}
+
+fn normalize_session_id(session_id: Option<String>) -> Option<String> {
+    session_id.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn idle_pet_state(current_pet_id: Option<String>, is_meowing: bool) -> PetState {
+    PetState {
+        progress: TaskProgress {
+            total_tools: 0,
+            completed_tools: 0,
+            current_tool: String::new(),
+            status: "idle".to_string(),
+            session_title: String::new(),
+            last_message: String::new(),
+        },
+        is_meowing,
+        mood: "sleeping".to_string(),
+        current_pet_id,
+        last_event: None,
+    }
+}
+
+fn active_pet_id(state: &AppState) -> Option<String> {
+    state
+        .pet_state
+        .lock()
+        .unwrap()
+        .current_pet_id
+        .clone()
+        .or_else(|| {
+            state
+                .pet_configs
+                .lock()
+                .unwrap()
+                .first()
+                .map(|config| config.id.clone())
+        })
+}
+
+fn pet_bound_session_id(state: &AppState, pet_id: &str) -> Option<String> {
+    state
+        .pet_configs
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|config| config.id == pet_id)
+        .and_then(|config| config.bound_session_id.clone())
+}
+
+fn active_bound_session_id(state: &AppState) -> Option<String> {
+    active_pet_id(state)
+        .as_deref()
+        .and_then(|pet_id| pet_bound_session_id(state, pet_id))
+        .or_else(|| state.bound_session_id.lock().unwrap().clone())
+}
+
+fn sync_active_bound_session_id(state: &AppState) -> Option<String> {
+    let bound_session_id = active_bound_session_id(state);
+    *state.bound_session_id.lock().unwrap() = bound_session_id.clone();
+    bound_session_id
+}
+
+fn set_current_pet_id(state: &AppState, pet_id: &str) -> Result<Option<String>, String> {
+    let bound_session_id = {
+        let configs = state.pet_configs.lock().unwrap();
+        let Some(config) = configs.iter().find(|config| config.id == pet_id) else {
+            return Err("Pet config not found".to_string());
+        };
+        config.bound_session_id.clone()
+    };
+
+    {
+        let mut pet_state = state.pet_state.lock().unwrap();
+        pet_state.current_pet_id = Some(pet_id.to_string());
+    }
+    *state.bound_session_id.lock().unwrap() = bound_session_id.clone();
+    Ok(bound_session_id)
+}
+
+fn set_pet_bound_session_id(
+    state: &AppState,
+    pet_id: &str,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    let config_dir = state.config_dir.lock().unwrap().clone();
+    let snapshot = {
+        let mut configs = state.pet_configs.lock().unwrap();
+        let Some(config) = configs.iter_mut().find(|config| config.id == pet_id) else {
+            return Err("Pet config not found".to_string());
+        };
+        config.bound_session_id = session_id.clone();
+        configs.clone()
+    };
+    save_pet_configs(&snapshot, &config_dir)?;
+
+    if active_pet_id(state).as_deref() == Some(pet_id) {
+        *state.bound_session_id.lock().unwrap() = session_id;
+    }
+    Ok(())
+}
+
 fn get_watched_session(db_path: &PathBuf, bound_session_id: Option<String>) -> Option<Session> {
     if let Some(session_id) = bound_session_id {
         db::get_session(db_path, &session_id).ok()
     } else {
-        db::get_latest_session(db_path).ok()
+        None
     }
 }
 
@@ -374,7 +645,7 @@ fn get_pet_state(state: State<AppState>) -> PetState {
 #[tauri::command]
 fn get_current_session(state: State<AppState>) -> Option<Session> {
     let db_path = state.db_path.lock().unwrap().clone();
-    let bound_session_id = state.bound_session_id.lock().unwrap().clone();
+    let bound_session_id = active_bound_session_id(&state);
     if let Some(path) = db_path.as_ref() {
         get_watched_session(path, bound_session_id)
     } else {
@@ -384,7 +655,7 @@ fn get_current_session(state: State<AppState>) -> Option<Session> {
 
 #[tauri::command]
 fn get_bound_session_id(state: State<AppState>) -> Option<String> {
-    state.bound_session_id.lock().unwrap().clone()
+    sync_active_bound_session_id(&state)
 }
 
 #[tauri::command]
@@ -448,9 +719,29 @@ fn set_database_path(path: String, state: State<AppState>) -> Result<(), String>
     {
         let mut db_path = state.db_path.lock().unwrap();
         *db_path = Some(candidate_path.clone());
-        let mut bound_session_id = state.bound_session_id.lock().unwrap();
-        *bound_session_id = None;
     }
+
+    if let Some(pet_id) = active_pet_id(&state) {
+        let config_dir = state.config_dir.lock().unwrap().clone();
+        let snapshot = {
+            let mut configs = state.pet_configs.lock().unwrap();
+            if let Some(index) = configs.iter().position(|config| config.id == pet_id) {
+                configs[index].db_path = candidate_path.to_string_lossy().to_string();
+                if let Some(session_id) = configs[index].bound_session_id.as_deref() {
+                    if db::get_session(&candidate_path, session_id).is_err() {
+                        configs[index].bound_session_id = None;
+                    }
+                }
+                Some(configs.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(snapshot) = snapshot {
+            save_pet_configs(&snapshot, &config_dir)?;
+        }
+    }
+    sync_active_bound_session_id(&state);
 
     // Register the new path with the file watcher if not already watched
     {
@@ -469,14 +760,7 @@ fn bind_session(
     app: AppHandle,
     state: State<AppState>,
 ) -> Result<(), String> {
-    let normalized_session_id = session_id.and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    });
+    let normalized_session_id = normalize_session_id(session_id);
 
     if let Some(session_id) = normalized_session_id.as_deref() {
         let db_path = state
@@ -488,10 +772,8 @@ fn bind_session(
         db::get_session(&db_path, session_id).map_err(|_| "Session not found".to_string())?;
     }
 
-    {
-        let mut bound_session_id = state.bound_session_id.lock().unwrap();
-        *bound_session_id = normalized_session_id;
-    }
+    let pet_id = active_pet_id(&state).ok_or_else(|| "No pet is selected".to_string())?;
+    set_pet_bound_session_id(&state, &pet_id, normalized_session_id)?;
 
     refresh_pet_state_from_app(&app);
     Ok(())
@@ -500,13 +782,19 @@ fn bind_session(
 pub fn refresh_pet_state_from_app(app: &AppHandle) {
     let state = app.state::<AppState>();
     let db_path = state.db_path.lock().unwrap().clone();
-    let bound_session_id = state.bound_session_id.lock().unwrap().clone();
+    let bound_session_id = active_bound_session_id(&state);
+    let current_pet_id = active_pet_id(&state);
+    let is_meowing = state.pet_state.lock().unwrap().is_meowing;
 
     let Some(path) = db_path else {
+        let mut current_state = state.pet_state.lock().unwrap();
+        *current_state = idle_pet_state(current_pet_id, is_meowing);
         return;
     };
 
     let Some(session) = get_watched_session(&path, bound_session_id) else {
+        let mut current_state = state.pet_state.lock().unwrap();
+        *current_state = idle_pet_state(current_pet_id, is_meowing);
         return;
     };
 
@@ -691,13 +979,21 @@ fn update_pet_config(config: PetConfig, state: State<AppState>) -> Result<(), St
 
 #[tauri::command]
 fn switch_pet(config_id: String, state: State<AppState>) -> Result<(), String> {
-    let configs = state.pet_configs.lock().unwrap();
-    if let Some(config) = configs.iter().find(|c| c.id == config_id) {
-        let mut db_path = state.db_path.lock().unwrap();
-        *db_path = Some(PathBuf::from(&config.db_path));
+    let config = state
+        .pet_configs
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|c| c.id == config_id)
+        .cloned();
+    if let Some(config) = config {
+        if !config.db_path.trim().is_empty() {
+            let mut db_path = state.db_path.lock().unwrap();
+            *db_path = Some(PathBuf::from(&config.db_path));
+        }
 
         let mut bound_session_id = state.bound_session_id.lock().unwrap();
-        *bound_session_id = None;
+        *bound_session_id = config.bound_session_id.clone();
 
         let mut pet_state = state.pet_state.lock().unwrap();
         pet_state.current_pet_id = Some(config_id);
@@ -742,11 +1038,14 @@ fn load_pet_configs(config_dir: &PathBuf) -> Vec<PetConfig> {
     if config_path.exists() {
         if let Ok(json) = std::fs::read_to_string(config_path) {
             if let Ok(configs) = serde_json::from_str(&json) {
-                return configs;
+                let configs: Vec<PetConfig> = configs;
+                if !configs.is_empty() {
+                    return configs;
+                }
             }
         }
     }
-    Vec::new()
+    default_pet_configs()
 }
 
 fn normalize_opencode_server_url(raw: &str) -> Result<String, String> {
@@ -845,7 +1144,7 @@ fn dispatch_blocker(
     if !database_valid {
         return Some("OpenCode database is not ready".to_string());
     }
-    if session.is_none() {
+    if session.is_none() && session_on_server != Some(true) {
         return Some("No OpenCode session is selected".to_string());
     }
     if session_on_server != Some(true) {
@@ -879,7 +1178,9 @@ fn workspace_next_action(
     dispatch_ready: bool,
     dispatch_blocker: Option<&str>,
 ) -> OpenCodeNextAction {
-    let session_id = session.map(|item| item.id.clone());
+    let session_id = session
+        .map(|item| item.id.clone())
+        .or_else(|| bound_session_id.map(ToString::to_string));
 
     if !server_online {
         return OpenCodeNextAction {
@@ -901,7 +1202,7 @@ fn workspace_next_action(
         };
     }
 
-    if session.is_none() {
+    if session.is_none() && session_status != "server-only" {
         return OpenCodeNextAction {
             kind: "match".to_string(),
             label: "MATCH".to_string(),
@@ -962,8 +1263,7 @@ fn workspace_next_action(
             kind: "match".to_string(),
             label: "MATCH".to_string(),
             priority: "info".to_string(),
-            summary: "Pin the office to the shared OpenCode session instead of following latest"
-                .to_string(),
+            summary: "Bind a session to this pet before the office can track progress".to_string(),
             session_id,
         };
     }
@@ -1011,11 +1311,15 @@ fn workspace_capabilities(
     dispatch_ready: bool,
     dispatch_blocker: Option<&str>,
 ) -> Vec<OpenCodeCapabilityItem> {
-    let has_session = session.is_some();
+    let has_session = session.is_some() || session_status == "server-only";
     let visible_on_server = session_on_server == Some(true);
     let session_label = session
         .map(|item| item.title.as_str())
-        .unwrap_or("No session selected");
+        .unwrap_or(if session_status == "server-only" {
+            "Server session selected"
+        } else {
+            "No session selected"
+        });
 
     vec![
         workspace_capability(
@@ -1266,7 +1570,7 @@ async fn open_terminal_command(args: &[String], project_dir: &PathBuf) -> Result
 
 fn current_project_dir(state: &AppState) -> PathBuf {
     let db_path = state.db_path.lock().unwrap().clone();
-    let bound_session_id = state.bound_session_id.lock().unwrap().clone();
+    let bound_session_id = active_bound_session_id(state);
     let watched_session = db_path
         .as_ref()
         .and_then(|path| get_watched_session(path, bound_session_id));
@@ -1452,15 +1756,6 @@ fn activity_status(
     local: Option<&Session>,
     server: Option<&OpenCodeServerSession>,
 ) -> String {
-    if link_status == "local-only" {
-        return "local-only".to_string();
-    }
-    if link_status == "server-only" {
-        return "server-only".to_string();
-    }
-    if link_status == "directory-diff" {
-        return "drift".to_string();
-    }
     if progress_status == "error" {
         return "error".to_string();
     }
@@ -1473,6 +1768,15 @@ fn activity_status(
     if event_type == Some("dispatch.quiet") {
         return "quiet".to_string();
     }
+    if link_status == "local-only" {
+        return "local-only".to_string();
+    }
+    if link_status == "server-only" {
+        return "server-only".to_string();
+    }
+    if link_status == "directory-diff" {
+        return "drift".to_string();
+    }
     if progress_status == "completed" {
         return "completed".to_string();
     }
@@ -1483,6 +1787,52 @@ fn activity_status(
         (None, Some(_)) => "server-only".to_string(),
         (None, None) => "unknown".to_string(),
     }
+}
+
+fn active_event_type(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "tool.started"
+            | "assistant.started"
+            | "assistant.streaming"
+            | "assistant.text.completed"
+            | "session.working"
+            | "session.retry"
+            | "user.prompted"
+            | "permission.asked"
+    )
+}
+
+fn completed_event_type(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "tool.completed" | "assistant.completed" | "session.idle" | "build.success"
+    )
+}
+
+fn activity_progress_status(
+    pet_progress_status: &str,
+    event: Option<&events::OpenCodeEvent>,
+) -> String {
+    if pet_progress_status == "working" {
+        return "working".to_string();
+    }
+
+    let Some(event) = event else {
+        return pet_progress_status.to_string();
+    };
+
+    if event.severity == "error" {
+        return "error".to_string();
+    }
+    if active_event_type(&event.event_type) {
+        return "working".to_string();
+    }
+    if completed_event_type(&event.event_type) {
+        return "completed".to_string();
+    }
+
+    pet_progress_status.to_string()
 }
 
 fn compact_signal_text(value: &str, fallback: &str, max_chars: usize) -> String {
@@ -2083,6 +2433,63 @@ async fn fetch_server_sessions(server_url: &str) -> Result<Vec<OpenCodeServerSes
     Ok(parse_server_session_list(&value))
 }
 
+async fn create_server_session(
+    server_url: &str,
+    title: &str,
+    directory: &PathBuf,
+) -> Result<OpenCodeServerSession, String> {
+    let url = format!("{server_url}/session");
+    let body = serde_json::json!({
+        "title": title,
+        "directory": directory.to_string_lossy(),
+    })
+    .to_string();
+    let output = tokio::process::Command::new("curl")
+        .args([
+            "-sS",
+            "-w",
+            "\n%{http_code}",
+            "-X",
+            "POST",
+            &url,
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            &body,
+            "--max-time",
+            "6",
+        ])
+        .output()
+        .await
+        .map_err(|err| format!("Could not create OpenCode session: {err}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let Some((response_body, status)) = stdout.rsplit_once('\n') else {
+        return Err("OpenCode session create returned an invalid response".to_string());
+    };
+
+    if status.trim() != "200" {
+        let detail = if stderr.trim().is_empty() {
+            response_body.trim().to_string()
+        } else {
+            stderr.trim().to_string()
+        };
+        return Err(format!(
+            "OpenCode server returned HTTP {} while creating a session: {detail}",
+            status.trim()
+        ));
+    }
+
+    let value = serde_json::from_str::<serde_json::Value>(response_body)
+        .map_err(|err| format!("OpenCode session create returned invalid JSON: {err}"))?;
+    let id = string_field(&value, "id")
+        .or_else(|| string_field(&value, "sessionID"))
+        .or_else(|| string_field(&value, "session_id"))
+        .ok_or_else(|| "OpenCode session create did not return a session id".to_string())?;
+    Ok(parse_server_session(&value, &id))
+}
+
 async fn select_tui_session(server_url: &str, session_id: &str) -> Result<String, String> {
     let url = format!("{server_url}/tui/select-session");
     let body = serde_json::json!({ "sessionID": session_id }).to_string();
@@ -2269,7 +2676,7 @@ async fn get_opencode_session_links(
 ) -> Result<Vec<OpenCodeSessionLink>, String> {
     let server_url = state.settings.lock().unwrap().opencode_server_url.clone();
     let db_path = state.db_path.lock().unwrap().clone();
-    let bound_session_id = state.bound_session_id.lock().unwrap().clone();
+    let bound_session_id = active_bound_session_id(&state);
     let current_session_id = db_path
         .as_ref()
         .and_then(|path| get_watched_session(path, bound_session_id.clone()))
@@ -2303,11 +2710,12 @@ async fn get_opencode_session_links(
 }
 
 async fn compute_opencode_activity(
+    app: Option<AppHandle>,
     state: State<'_, AppState>,
 ) -> Result<Vec<OpenCodeActivityItem>, String> {
     let server_url = state.settings.lock().unwrap().opencode_server_url.clone();
     let db_path = state.db_path.lock().unwrap().clone();
-    let bound_session_id = state.bound_session_id.lock().unwrap().clone();
+    let bound_session_id = active_bound_session_id(&state);
     let current_session_id = db_path
         .as_ref()
         .and_then(|path| get_watched_session(path, bound_session_id.clone()))
@@ -2332,6 +2740,7 @@ async fn compute_opencode_activity(
     };
 
     Ok(build_activity_items(
+        app,
         local_sessions,
         server_sessions,
         db_path.as_ref(),
@@ -2343,6 +2752,7 @@ async fn compute_opencode_activity(
 }
 
 fn build_activity_items(
+    app: Option<AppHandle>,
     local_sessions: Vec<Session>,
     server_sessions: Vec<OpenCodeServerSession>,
     db_path: Option<&PathBuf>,
@@ -2377,6 +2787,37 @@ fn build_activity_items(
             (Some(path), Some(session)) => db::get_messages(path, &session.id).unwrap_or_default(),
             _ => Vec::new(),
         };
+        let summary_todos = match (db_path, local.as_ref()) {
+            (Some(path), Some(session)) => db::get_session_todos(path, &session.id).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let should_summarize = app.as_ref().is_some_and(|handle| {
+            let state = handle.state::<AppState>();
+            let pet_bound = state
+                .pet_configs
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|config| config.bound_session_id.as_deref() == Some(id.as_str()));
+            pet_bound || current_session_id == Some(id.as_str()) || link.is_bound
+        });
+        let ai_summary = if should_summarize {
+            match (app.as_ref(), local.as_ref()) {
+                (Some(handle), Some(session)) => {
+                    let state = handle.state::<AppState>();
+                    summary_for_session(
+                        Some(handle.clone()),
+                        state.inner(),
+                        session,
+                        &messages,
+                        &summary_todos,
+                    )
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
         let (pet_state, session_event) = match local.as_ref() {
             Some(session) => events::analyze_session(session, &messages),
             None => (
@@ -2400,11 +2841,16 @@ fn build_activity_items(
                 None,
             ),
         };
-        let matching_live_event = event_history
+        let event = event_history
             .iter()
-            .find(|event| event.session_id == id)
-            .cloned();
-        let event = matching_live_event.or(session_event);
+            .filter(|event| event.session_id == id)
+            .cloned()
+            .chain(session_event)
+            .max_by(|left, right| {
+                left.timestamp
+                    .cmp(&right.timestamp)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
         let message_count = local
             .as_ref()
             .map(|session| i64::from(session.message_count))
@@ -2447,22 +2893,16 @@ fn build_activity_items(
             (None, None) => "unknown",
         }
         .to_string();
-        let progress_status = event
-            .as_ref()
-            .map(|event| match event.severity.as_str() {
-                "error" => "error",
-                "success" => "completed",
-                _ => pet_state.progress.status.as_str(),
-            })
-            .unwrap_or_else(|| pet_state.progress.status.as_str());
+        let progress_status =
+            activity_progress_status(&pet_state.progress.status, event.as_ref());
         let awaiting_user = matches!(
             event.as_ref().map(|event| event.event_type.as_str()),
             Some("permission.asked" | "user.prompted")
         ) || (matches!(last_role.as_deref(), Some("assistant"))
-            && progress_status != "working"
-            && progress_status != "error");
+            && progress_status.as_str() != "working"
+            && progress_status.as_str() != "error");
         let status = activity_status(
-            progress_status,
+            &progress_status,
             &link.status,
             event.as_ref().map(|event| event.event_type.as_str()),
             local.as_ref(),
@@ -2481,7 +2921,7 @@ fn build_activity_items(
         let status_reason = activity_status_reason(
             &status,
             &link.status,
-            progress_status,
+            &progress_status,
             event.as_ref(),
             last_role.as_deref(),
             awaiting_user,
@@ -2544,6 +2984,7 @@ fn build_activity_items(
             idle_ms,
             total_tools: pet_state.progress.total_tools,
             completed_tools: pet_state.progress.completed_tools,
+            ai_summary,
         });
     }
 
@@ -2552,17 +2993,19 @@ fn build_activity_items(
 
 #[tauri::command]
 async fn get_opencode_activity(
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<OpenCodeActivityItem>, String> {
-    compute_opencode_activity(state).await
+    compute_opencode_activity(Some(app), state).await
 }
 
 #[tauri::command]
 async fn get_opencode_attention(
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<OpenCodeAttentionItem>, String> {
     let event_history = event_history_snapshot(&state);
-    let activity = compute_opencode_activity(state).await?;
+    let activity = compute_opencode_activity(Some(app), state).await?;
     Ok(attention_items_from_activity(&event_history, &activity))
 }
 
@@ -2614,7 +3057,7 @@ async fn get_opencode_office_snapshot(app: AppHandle) -> Result<OpenCodeOfficeSn
     let state = app.state::<AppState>();
     let workspace_state = get_opencode_workspace_state(state.clone()).await?;
     let db_path = state.db_path.lock().unwrap().clone();
-    let bound_session_id = state.bound_session_id.lock().unwrap().clone();
+    let bound_session_id = active_bound_session_id(&state);
     let event_history = event_history_snapshot(&state);
     let sessions = if let Some(path) = db_path.as_ref() {
         db::get_all_sessions(path).unwrap_or_default()
@@ -2642,6 +3085,7 @@ async fn get_opencode_office_snapshot(app: AppHandle) -> Result<OpenCodeOfficeSn
         24,
     );
     let activity_items = build_activity_items(
+        Some(app.clone()),
         sessions.clone(),
         server_sessions,
         db_path.as_ref(),
@@ -2676,7 +3120,7 @@ async fn get_opencode_workspace_state(
     let snapshot_started = Instant::now();
     let server_url = state.settings.lock().unwrap().opencode_server_url.clone();
     let db_path = state.db_path.lock().unwrap().clone();
-    let bound_session_id = state.bound_session_id.lock().unwrap().clone();
+    let bound_session_id = active_bound_session_id(&state);
     let pet_state = state.pet_state.lock().unwrap().clone();
     let watched_paths = state.watched_paths.lock().unwrap().clone();
     let stream = state.stream_state.lock().unwrap().clone();
@@ -2691,15 +3135,10 @@ async fn get_opencode_workspace_state(
     let session = db_path
         .as_ref()
         .and_then(|path| get_watched_session(path, bound_session_id.clone()));
-    let project_dir = session
-        .as_ref()
-        .and_then(|session| session.directory.clone())
-        .or_else(|| {
-            db_path.as_ref().and_then(|path| {
-                path.parent()
-                    .map(|parent| parent.to_string_lossy().to_string())
-            })
-        });
+    let database_project_dir = db_path.as_ref().and_then(|path| {
+        path.parent()
+            .map(|parent| parent.to_string_lossy().to_string())
+    });
     let database_duration_ms = database_started.elapsed().as_millis();
 
     let server_started = Instant::now();
@@ -2707,9 +3146,13 @@ async fn get_opencode_workspace_state(
         probe_opencode_server(&server_url).await;
     let server_duration_ms = server_started.elapsed().as_millis();
     let server_session_started = Instant::now();
+    let server_lookup_id = session
+        .as_ref()
+        .map(|session| session.id.clone())
+        .or_else(|| bound_session_id.clone());
     let server_session_result = if server_online {
-        if let Some(session) = session.as_ref() {
-            fetch_server_session(&server_url, &session.id).await
+        if let Some(session_id) = server_lookup_id.as_deref() {
+            fetch_server_session(&server_url, session_id).await
         } else {
             None
         }
@@ -2722,6 +3165,11 @@ async fn get_opencode_workspace_state(
         .as_ref()
         .and_then(|result| result.as_ref().err().cloned());
     let server_session = server_session_result.and_then(Result::ok);
+    let project_dir = session
+        .as_ref()
+        .and_then(|session| session.directory.clone())
+        .or_else(|| server_session.as_ref().and_then(|session| session.directory.clone()))
+        .or(database_project_dir);
     let session_directory_matches = match (
         session.as_ref().and_then(|item| item.directory.as_deref()),
         server_session
@@ -2751,20 +3199,20 @@ async fn get_opencode_workspace_state(
     let watch_mode = if bound_session_id.is_some() {
         "bound"
     } else {
-        "latest"
+        "unbound"
     }
     .to_string();
 
     let session_status = match (
-        session.as_ref(),
         bound_session_id.as_ref(),
+        session.as_ref(),
         session_on_server,
     ) {
-        (None, _, _) => "missing",
+        (None, _, _) => "unbound",
+        (Some(_), None, Some(true)) => "server-only",
+        (Some(_), None, _) => "missing",
         (Some(_), Some(_), Some(false)) => "server-mismatch",
-        (Some(_), None, Some(false)) => "server-mismatch",
         (Some(_), Some(_), _) => "bound",
-        (Some(_), None, _) => "latest",
     }
     .to_string();
 
@@ -2808,9 +3256,11 @@ async fn get_opencode_workspace_state(
                 .as_deref()
                 .unwrap_or("Watched session exists in SQLite but is not visible on the configured OpenCode server"),
         )),
-        "missing" => health.push(workspace_health("warning", "session.missing", "No OpenCode session is available")),
+        "missing" => health.push(workspace_health("warning", "session.missing", "Bound OpenCode session is not available")),
+        "server-only" => health.push(workspace_health("info", "session.server_only", "New OpenCode session is visible on the server and will sync locally")),
+        "unbound" => health.push(workspace_health("info", "session.unbound", "No pet is bound to an OpenCode session")),
         "bound" => health.push(workspace_health("success", "session.bound", "Watching a bound OpenCode session")),
-        _ => health.push(workspace_health("info", "session.latest", "Watching the latest OpenCode session")),
+        _ => health.push(workspace_health("info", "session.unknown", "OpenCode session state is unknown")),
     }
 
     if session_directory_matches == Some(false) {
@@ -3059,7 +3509,8 @@ async fn require_server_session(
 async fn align_opencode_session(app: AppHandle) -> Result<OpenCodeAlignmentResult, String> {
     let state = app.state::<AppState>();
     let server_url = state.settings.lock().unwrap().opencode_server_url.clone();
-    let previous_session_id = state.bound_session_id.lock().unwrap().clone();
+    let active_pet_id = active_pet_id(&state).ok_or_else(|| "No pet is selected".to_string())?;
+    let previous_session_id = pet_bound_session_id(&state, &active_pet_id);
     let db_path = state
         .db_path
         .lock()
@@ -3078,10 +3529,7 @@ async fn align_opencode_session(app: AppHandle) -> Result<OpenCodeAlignmentResul
     };
 
     let selected_session_id = Some(selected_session.id.clone());
-    {
-        let mut bound_session_id = state.bound_session_id.lock().unwrap();
-        *bound_session_id = selected_session_id.clone();
-    }
+    set_pet_bound_session_id(&state, &active_pet_id, selected_session_id.clone())?;
 
     let action = if previous_session_id.as_deref() == selected_session_id.as_deref() {
         "kept"
@@ -3142,60 +3590,61 @@ async fn align_opencode_session(app: AppHandle) -> Result<OpenCodeAlignmentResul
     })
 }
 
-#[tauri::command]
-async fn bind_opencode_session(
-    session_id: Option<String>,
+async fn bind_session_for_pet(
     app: AppHandle,
+    pet_id: Option<String>,
+    session_id: Option<String>,
 ) -> Result<OpenCodeAlignmentResult, String> {
     let state = app.state::<AppState>();
-    let previous_session_id = state.bound_session_id.lock().unwrap().clone();
-    let normalized_session_id = session_id.and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    });
-
-    let db_path = state
-        .db_path
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "No OpenCode database selected".to_string())?;
+    if let Some(pet_id) = pet_id.as_deref() {
+        set_current_pet_id(&state, pet_id)?;
+    }
+    let active_pet_id = active_pet_id(&state).ok_or_else(|| "No pet is selected".to_string())?;
+    let previous_session_id = pet_bound_session_id(&state, &active_pet_id);
+    let normalized_session_id = normalize_session_id(session_id);
 
     let selected_session = if let Some(session_id) = normalized_session_id.as_deref() {
+        let db_path = state
+            .db_path
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "No OpenCode database selected".to_string())?;
         Some(db::get_session(&db_path, session_id).map_err(|_| "Session not found".to_string())?)
     } else {
-        get_watched_session(&db_path, None)
+        None
     };
-
-    {
-        let mut bound_session_id = state.bound_session_id.lock().unwrap();
-        *bound_session_id = normalized_session_id.clone();
-    }
+    set_pet_bound_session_id(&state, &active_pet_id, normalized_session_id.clone())?;
 
     let server_url = state.settings.lock().unwrap().opencode_server_url.clone();
     let (tui_selected, tui_detail) = if let Some(session) = selected_session.as_ref() {
-        match select_tui_session(&server_url, &session.id).await {
-            Ok(detail) => (true, detail),
+        let server_ready = ensure_opencode_server_running(&state, &server_url).await;
+        match server_ready {
+            Ok(()) => match require_server_session(&server_url, &session.id).await {
+                Ok(_) => match select_tui_session(&server_url, &session.id).await {
+                    Ok(detail) => (true, detail),
+                    Err(err) => (false, err),
+                },
+                Err(err) => (false, err),
+            },
             Err(err) => (false, err),
         }
     } else {
         (
             false,
-            "No local OpenCode session is available for TUI selection".to_string(),
+            "No OpenCode session is bound to this pet".to_string(),
         )
     };
 
     refresh_pet_state_from_app(&app);
     let workspace_state = get_opencode_workspace_state(state.clone()).await?;
     let session_links = get_opencode_session_links(state).await?;
-    let action = if normalized_session_id.is_some() {
-        "bound"
+    let action = if normalized_session_id.is_none() {
+        "unbound"
+    } else if previous_session_id.as_deref() == normalized_session_id.as_deref() {
+        "kept"
     } else {
-        "follow"
+        "bound"
     }
     .to_string();
     let message = match (
@@ -3207,19 +3656,12 @@ async fn bind_opencode_session(
         (Some(_), Some(session), false) => {
             format!("Bound `{}`; TUI select needs attention", session.title)
         }
-        (None, Some(session), true) => {
-            format!("Following latest `{}`; TUI selected", session.title)
-        }
-        (None, Some(session), false) => format!(
-            "Following latest `{}`; TUI select needs attention",
-            session.title
-        ),
-        _ => "Session binding updated".to_string(),
+        _ => "Pet session binding cleared".to_string(),
     };
     emit_control_event(
         &app,
         "control.session.bound",
-        if tui_selected { "success" } else { "warning" },
+        if selected_session.is_none() || tui_selected { "success" } else { "warning" },
         selected_session.as_ref().map(|session| session.id.as_str()),
         selected_session
             .as_ref()
@@ -3239,6 +3681,89 @@ async fn bind_opencode_session(
         workspace_state,
         session_links,
     })
+}
+
+#[tauri::command]
+async fn bind_pet_session(
+    pet_id: String,
+    session_id: Option<String>,
+    app: AppHandle,
+) -> Result<OpenCodeAlignmentResult, String> {
+    bind_session_for_pet(app, Some(pet_id), session_id).await
+}
+
+#[tauri::command]
+async fn create_pet_session(
+    pet_id: String,
+    title: Option<String>,
+    app: AppHandle,
+) -> Result<OpenCodeAlignmentResult, String> {
+    let state = app.state::<AppState>();
+    set_current_pet_id(&state, &pet_id)?;
+    let active_pet_id = active_pet_id(&state).ok_or_else(|| "No pet is selected".to_string())?;
+    let previous_session_id = pet_bound_session_id(&state, &active_pet_id);
+    let pet_name = state
+        .pet_configs
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|config| config.id == active_pet_id)
+        .map(|config| config.name.clone())
+        .unwrap_or_else(|| "Cat".to_string());
+    let server_url = state.settings.lock().unwrap().opencode_server_url.clone();
+    let project_dir = current_project_dir(&state);
+    ensure_opencode_server_running(&state, &server_url).await?;
+
+    let fallback_title = format!("{pet_name} 的新对话");
+    let session_title = title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&fallback_title);
+    let server_session = create_server_session(&server_url, session_title, &project_dir).await?;
+    set_pet_bound_session_id(&state, &active_pet_id, Some(server_session.id.clone()))?;
+
+    let (tui_selected, tui_detail) = match select_tui_session(&server_url, &server_session.id).await {
+        Ok(detail) => (true, detail),
+        Err(err) => (false, err),
+    };
+
+    refresh_pet_state_from_app(&app);
+    let workspace_state = get_opencode_workspace_state(state.clone()).await?;
+    let session_links = get_opencode_session_links(state).await?;
+    let message = if tui_selected {
+        format!("Created `{}` and bound it to {pet_name}; TUI selected", server_session.title)
+    } else {
+        format!("Created `{}` and bound it to {pet_name}; TUI select needs attention", server_session.title)
+    };
+    emit_control_event(
+        &app,
+        "control.session.created",
+        if tui_selected { "success" } else { "warning" },
+        Some(&server_session.id),
+        &server_session.title,
+        &message,
+        "create",
+    );
+
+    Ok(OpenCodeAlignmentResult {
+        action: "created".to_string(),
+        message,
+        previous_session_id,
+        selected_session_id: Some(server_session.id),
+        tui_selected,
+        tui_detail,
+        workspace_state,
+        session_links,
+    })
+}
+
+#[tauri::command]
+async fn bind_opencode_session(
+    session_id: Option<String>,
+    app: AppHandle,
+) -> Result<OpenCodeAlignmentResult, String> {
+    bind_session_for_pet(app, None, session_id).await
 }
 
 #[tauri::command]
@@ -3263,10 +3788,8 @@ async fn bind_shared_server_session(app: AppHandle) -> Result<OpenCodeWorkspaceS
         );
     };
 
-    {
-        let mut bound_session_id = state.bound_session_id.lock().unwrap();
-        *bound_session_id = Some(best_match.id.clone());
-    }
+    let active_pet_id = active_pet_id(&state).ok_or_else(|| "No pet is selected".to_string())?;
+    set_pet_bound_session_id(&state, &active_pet_id, Some(best_match.id.clone()))?;
 
     if let Err(err) = select_tui_session(&server_url, &best_match.id).await {
         eprintln!("Failed to select OpenCode TUI session after match: {err}");
@@ -3305,8 +3828,9 @@ async fn launch_opencode_web(
         {
             project_dir = PathBuf::from(directory);
         }
-        let mut bound_session_id = state.bound_session_id.lock().unwrap();
-        *bound_session_id = Some(session_id.to_string());
+        if let Some(active_pet_id) = active_pet_id(&state) {
+            set_pet_bound_session_id(&state, &active_pet_id, Some(session_id.to_string()))?;
+        }
     }
     let command = open_external_url(&server_url).await?;
     let workspace_state = get_opencode_workspace_state(state.clone()).await?;
@@ -3347,22 +3871,25 @@ async fn launch_opencode_web(
     })
 }
 
-// Width (logical px) of the embedded OpenCode webview shown on the right side of
-// the office window. Keep in sync with EMBEDDED_WEBVIEW_WIDTH in src/constants.ts.
-// The office window is 1480px wide (see set_window_mode), so the webview fills the
-// right half and its left edge sits at EMBEDDED_WEBVIEW_WIDTH.
+// Embedded OpenCode geometry. Keep in sync with src/constants.ts.
+const OFFICE_WINDOW_WIDTH: f64 = 1480.0;
+const OFFICE_WINDOW_HEIGHT: f64 = 820.0;
 const EMBEDDED_WEBVIEW_WIDTH: f64 = 740.0;
+const EMBEDDED_WEBVIEW_TOP_BAR: f64 = 56.0;
 
 #[tauri::command]
-fn open_embedded_webview(app: AppHandle, url: String, _title: String) -> Result<(), String> {
+fn open_embedded_webview(
+    app: AppHandle,
+    url: String,
+    _title: String,
+    layout: Option<String>,
+) -> Result<(), String> {
     let label = "opencode-webview";
-    
-    if let Some(existing) = app.get_webview(label) {
-        let _ = existing.close();
-    }
-    
+    let parsed_url = url
+        .parse()
+        .map_err(|err| format!("Invalid embedded OpenCode URL: {err}"))?;
     let app_clone = app.clone();
-    let url_clone = url.clone();
+    let layout = layout.unwrap_or_else(|| "dock".to_string());
     
     app.run_on_main_thread(move || {
         let init_script = r#"
@@ -3370,12 +3897,30 @@ fn open_embedded_webview(app: AppHandle, url: String, _title: String) -> Result<
                 localStorage.setItem('opencode-color-scheme', 'dark');
             } catch(e) {}
         "#;
+
+        if let Some(existing) = app_clone.get_webview(label) {
+            let _ = existing.close();
+        }
         
         if let Some(window) = app_clone.get_window("main") {
-            let webview_builder = tauri::WebviewBuilder::new(label, tauri::WebviewUrl::External(url_clone.parse().expect("valid URL")))
+            let webview_builder = tauri::WebviewBuilder::new(label, tauri::WebviewUrl::External(parsed_url))
                 .initialization_script(init_script);
+            let (position, size) = if layout == "focus" {
+                (
+                    tauri::LogicalPosition::new(0.0, EMBEDDED_WEBVIEW_TOP_BAR),
+                    tauri::LogicalSize::new(
+                        OFFICE_WINDOW_WIDTH,
+                        OFFICE_WINDOW_HEIGHT - EMBEDDED_WEBVIEW_TOP_BAR,
+                    ),
+                )
+            } else {
+                (
+                    tauri::LogicalPosition::new(EMBEDDED_WEBVIEW_WIDTH, 0.0),
+                    tauri::LogicalSize::new(EMBEDDED_WEBVIEW_WIDTH, OFFICE_WINDOW_HEIGHT),
+                )
+            };
             
-            let webview = window.add_child(webview_builder, tauri::LogicalPosition::new(EMBEDDED_WEBVIEW_WIDTH, 0.0), tauri::LogicalSize::new(EMBEDDED_WEBVIEW_WIDTH, 820.0));
+            let webview = window.add_child(webview_builder, position, size);
             
             if let Err(e) = webview {
                 eprintln!("Failed to add webview: {}", e);
@@ -3390,10 +3935,13 @@ fn open_embedded_webview(app: AppHandle, url: String, _title: String) -> Result<
 #[tauri::command]
 fn close_embedded_webview(app: AppHandle) -> Result<(), String> {
     let label = "opencode-webview";
-    if let Some(webview) = app.get_webview(label) {
-        let _ = webview.close();
-    }
-    Ok(())
+    let app_clone = app.clone();
+    app.run_on_main_thread(move || {
+        if let Some(webview) = app_clone.get_webview(label) {
+            let _ = webview.close();
+        }
+    })
+    .map_err(|e| format!("Failed to close embedded webview: {e}"))
 }
 
 #[tauri::command]
@@ -3408,15 +3956,16 @@ async fn launch_opencode_attach(
     ensure_opencode_server_running(&state, &server_url).await?;
 
     let db_path = state.db_path.lock().unwrap().clone();
-    let bound_session_id = state.bound_session_id.lock().unwrap().clone();
+    let bound_session_id = active_bound_session_id(&state);
     let watched_session = db_path
         .as_ref()
         .and_then(|path| get_watched_session(path, bound_session_id));
     let shared_session =
         shared_session_for_launch(db_path, &server_url, session_id, watched_session).await?;
     if let Some(session) = shared_session.as_ref() {
-        let mut bound_session_id = state.bound_session_id.lock().unwrap();
-        *bound_session_id = Some(session.id.clone());
+        if let Some(active_pet_id) = active_pet_id(&state) {
+            set_pet_bound_session_id(&state, &active_pet_id, Some(session.id.clone()))?;
+        }
         if let Some(directory) = session
             .directory
             .as_ref()
@@ -3526,9 +4075,11 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
     let menu = Menu::with_items(app, &[&show_i, &hide_i, &settings_i, &quit_i])?;
+    let tray_icon = Image::new(include_bytes!("../icons/tray-template.rgba"), 32, 32);
 
     let _tray = TrayIconBuilder::new()
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(tray_icon)
+        .icon_as_template(true)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
@@ -3587,19 +4138,41 @@ fn hide_window(app: AppHandle) {
     }
 }
 
+fn recenter_office_window(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.center();
+        let _ = window.set_focus();
+    }
+
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(80));
+        let app_for_main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(window) = app_for_main.get_webview_window("main") {
+                let _ = window.center();
+                let _ = window.set_focus();
+            }
+        });
+    });
+}
+
 #[tauri::command]
 fn set_window_mode(mode: String, app: AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let size = match mode.as_str() {
             "chat" => LogicalSize::new(620.0, 480.0),
             "office" => LogicalSize::new(1480.0, 820.0),
+            "picker" => LogicalSize::new(560.0, 640.0),
             "settings" => LogicalSize::new(480.0, 520.0),
             "pets" => LogicalSize::new(480.0, 600.0),
-            _ => LogicalSize::new(160.0, 220.0),
+            _ => LogicalSize::new(190.0, 220.0),
         };
         let _ = window.set_size(size);
         let resizable = mode == "chat" || mode == "office";
         let _ = window.set_resizable(resizable);
+        if mode == "office" || mode == "picker" {
+            recenter_office_window(app);
+        }
     }
 }
 
@@ -3853,13 +4426,18 @@ pub fn run() {
             std::fs::create_dir_all(&config_dir).ok();
 
             let pet_configs = load_pet_configs(&config_dir);
+            let current_pet_id = pet_configs.first().map(|config| config.id.clone());
+            let current_bound_session_id = pet_configs
+                .first()
+                .and_then(|config| config.bound_session_id.clone());
             let settings = load_app_settings(&config_dir);
+            let summary_cache = load_summary_cache(&config_dir);
 
             let watched_paths: monitor::WatchedPaths = Arc::new(Mutex::new(Vec::new()));
 
             app.manage(AppState {
                 db_path: Mutex::new(None),
-                bound_session_id: Mutex::new(None),
+                bound_session_id: Mutex::new(current_bound_session_id),
                 pet_state: Mutex::new(PetState {
                     progress: TaskProgress {
                         total_tools: 0,
@@ -3871,7 +4449,7 @@ pub fn run() {
                     },
                     is_meowing: false,
                     mood: "sleeping".to_string(),
-                    current_pet_id: None,
+                    current_pet_id,
                     last_event: None,
                 }),
                 event_history: Mutex::new(Vec::new()),
@@ -3880,6 +4458,9 @@ pub fn run() {
                 config_dir: Mutex::new(config_dir),
                 watched_paths: watched_paths.clone(),
                 stream_state: Mutex::new(OpenCodeStreamState::default()),
+                summary_cache: Mutex::new(summary_cache),
+                summary_inflight: Mutex::new(HashSet::new()),
+                summary_last_attempt: Mutex::new(HashMap::new()),
             });
 
             setup_tray(app.handle())?;
@@ -3890,7 +4471,13 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
-                monitor::start_monitor(app_handle, watched_paths);
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    monitor::start_monitor(app_handle, watched_paths);
+                }))
+                .is_err()
+                {
+                    eprintln!("OpenCode database monitor stopped after a watcher panic");
+                }
             });
 
             opencode_stream::start(app.handle().clone());
@@ -3950,6 +4537,8 @@ pub fn run() {
             ensure_opencode_server,
             align_opencode_session,
             bind_opencode_session,
+            bind_pet_session,
+            create_pet_session,
             bind_shared_server_session,
             launch_opencode_web,
             launch_opencode_attach,
