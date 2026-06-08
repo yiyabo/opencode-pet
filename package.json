@@ -1,7 +1,15 @@
 {
   "name": "opencode-pet",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.0",
+  "description": "A local desktop cat companion for monitoring OpenCode sessions.",
+  "license": "MIT",
+  "keywords": [
+    "opencode",
+    "tauri",
+    "desktop-pet",
+    "local-first"
+  ],
   "type": "module",
   "scripts": {
     "dev": "vite",

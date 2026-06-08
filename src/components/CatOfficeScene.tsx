@@ -5,6 +5,7 @@ import type {
   OpenCodeEvent,
   OpenCodeSessionLink,
   OpenCodeWorkspaceState,
+  PetConfig,
   TodoItem,
 } from "../types";
 import { createCatSpriteRegistry } from "./officeScene/assets";
@@ -23,6 +24,7 @@ interface SceneCat {
 
 interface CatOfficeSceneProps {
   cats: SceneCat[];
+  pets?: PetConfig[];
   sessionLinks?: OpenCodeSessionLink[];
   activityItems?: OpenCodeActivityItem[];
   attentionItems?: OpenCodeAttentionItem[];
@@ -41,6 +43,8 @@ interface CatOfficeSceneProps {
 }
 
 type OpsActionKind = "open" | "start" | "align" | "match" | "dispatch" | string;
+const OFFICE_SCENE_FPS = 24;
+const OFFICE_DOCKED_SCENE_FPS = 12;
 
 interface SceneDispatchSignal {
   state: "pending" | "success" | "warning" | "error";
@@ -55,6 +59,7 @@ interface SceneDispatchSignal {
 
 export function CatOfficeScene({
   cats,
+  pets = [],
   sessionLinks = [],
   activityItems = [],
   attentionItems = [],
@@ -77,6 +82,7 @@ export function CatOfficeScene({
   const onRunSessionActionRef = useRef(onRunSessionAction);
   const onRunOpsActionRef = useRef(onRunOpsAction);
   const catsRef = useRef(cats);
+  const petsRef = useRef(pets);
   const sessionLinksRef = useRef(sessionLinks);
   const activityItemsRef = useRef(activityItems);
   const attentionItemsRef = useRef(attentionItems);
@@ -106,6 +112,7 @@ export function CatOfficeScene({
 
   useEffect(() => {
     catsRef.current = cats;
+    petsRef.current = pets;
     sessionLinksRef.current = sessionLinks;
     activityItemsRef.current = activityItems;
     attentionItemsRef.current = attentionItems;
@@ -116,7 +123,7 @@ export function CatOfficeScene({
     focusedSessionRef.current = focusedSessionId;
     sessionTodosRef.current = sessionTodos;
     isWebviewOpenRef.current = isWebviewOpen;
-  }, [cats, sessionLinks, activityItems, attentionItems, workspaceState, dispatchSignal, latestEvent, eventHistory, focusedSessionId, sessionTodos, isWebviewOpen]);
+  }, [cats, pets, sessionLinks, activityItems, attentionItems, workspaceState, dispatchSignal, latestEvent, eventHistory, focusedSessionId, sessionTodos, isWebviewOpen]);
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -136,6 +143,7 @@ export function CatOfficeScene({
 
     let frame = 0;
     let animationId = 0;
+    let lastRenderAt = 0;
 
     const resizeCanvas = () => {
       stage.resize(canvas, isWebviewOpenRef.current);
@@ -146,10 +154,22 @@ export function CatOfficeScene({
     const observer = new ResizeObserver(resizeCanvas);
     observer.observe(canvas);
 
-    const render = () => {
+    const render = (timestamp: number) => {
+      const targetFps = isWebviewOpenRef.current ? OFFICE_DOCKED_SCENE_FPS : OFFICE_SCENE_FPS;
+      const minFrameMs = 1000 / targetFps;
+      if (document.hidden) {
+        animationId = window.requestAnimationFrame(render);
+        return;
+      }
+      if (lastRenderAt > 0 && timestamp - lastRenderAt < minFrameMs) {
+        animationId = window.requestAnimationFrame(render);
+        return;
+      }
+      lastRenderAt = timestamp;
       frame += 1;
       hitBoxesRef.current = stage.render({
         sessionLinks: sessionLinksRef.current,
+        pets: petsRef.current,
         activityItems: activityItemsRef.current,
         attentionItems: attentionItemsRef.current,
         workspaceState: workspaceStateRef.current,
@@ -189,7 +209,7 @@ export function CatOfficeScene({
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerleave", onPointerLeave);
     canvas.addEventListener("pointerdown", onPointerDown);
-    render();
+    animationId = window.requestAnimationFrame(render);
 
     return () => {
       window.cancelAnimationFrame(animationId);

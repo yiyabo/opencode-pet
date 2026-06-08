@@ -24,6 +24,7 @@ struct EventCounters {
     has_error: bool,
     has_cancel: bool,
     has_active_tool: bool,
+    has_active_assistant: bool,
     last_text: String,
     last_event: Option<OpenCodeEvent>,
 }
@@ -49,9 +50,12 @@ pub fn analyze_session(
         }
     }
 
-    let status = if counters.has_active_tool {
+    let status = if counters.has_active_tool
+        || counters.has_active_assistant
+        || latest_assistant_active(messages)
+    {
         "working"
-    } else if recent_error {
+    } else if counters.has_error || recent_error {
         "error"
     } else if counters.completed_tools > 0 || latest_assistant_finished(messages) {
         "completed"
@@ -148,6 +152,11 @@ fn inspect_part(session: &Session, message: &Message, part: &Value, counters: &m
         }
     }
 
+    if part_type == "tool" {
+        inspect_modern_tool_part(session, message, part, counters, is_recent);
+        return;
+    }
+
     if part_type.contains("tool_call")
         || lower_part.contains("tool_call")
         || lower_part.contains("toolcall")
@@ -186,7 +195,21 @@ fn inspect_part(session: &Session, message: &Message, part: &Value, counters: &m
         }
     }
 
-    if part_type == "finish" {
+    if part_type == "step-start" && message.role == "assistant" && message.finished_at.is_none() {
+        counters.has_active_assistant = true;
+        if is_recent {
+            counters.last_event = Some(make_event(
+                session,
+                message,
+                "assistant.started",
+                "info",
+                "OpenCode started processing",
+                "",
+            ));
+        }
+    }
+
+    if part_type == "finish" || part_type == "step-finish" {
         let reason = data
             .get("reason")
             .and_then(Value::as_str)
@@ -207,6 +230,7 @@ fn inspect_part(session: &Session, message: &Message, part: &Value, counters: &m
                 }
             }
             "end_turn" | "stop" => {
+                counters.has_active_assistant = false;
                 counters.has_active_tool = false;
                 if is_recent {
                     counters.last_event = Some(make_event(
@@ -218,6 +242,9 @@ fn inspect_part(session: &Session, message: &Message, part: &Value, counters: &m
                         "",
                     ));
                 }
+            }
+            "tool-calls" => {
+                counters.has_active_assistant = false;
             }
             _ => {}
         }
@@ -237,6 +264,70 @@ fn inspect_part(session: &Session, message: &Message, part: &Value, counters: &m
             ));
         }
     }
+}
+
+fn inspect_modern_tool_part(
+    session: &Session,
+    message: &Message,
+    part: &Value,
+    counters: &mut EventCounters,
+    is_recent: bool,
+) {
+    counters.total_tools += 1;
+    let tool_name = extract_tool_name(part).unwrap_or_else(|| "tool".to_string());
+    counters.current_tool = tool_name.clone();
+    let status = tool_part_status(part).unwrap_or_default();
+
+    match status {
+        "completed" => {
+            counters.completed_tools += 1;
+            if is_recent {
+                counters.last_event = Some(make_event(
+                    session,
+                    message,
+                    "tool.completed",
+                    "success",
+                    &format!("Finished {}", fallback_tool_name(&tool_name)),
+                    &tool_name,
+                ));
+            }
+        }
+        "error" | "failed" => {
+            counters.has_error = true;
+            if is_recent {
+                counters.last_event = Some(make_event(
+                    session,
+                    message,
+                    "tool.failed",
+                    "error",
+                    &format!("{} failed", fallback_tool_name(&tool_name)),
+                    &tool_name,
+                ));
+            }
+        }
+        _ => {
+            if message.finished_at.is_none() {
+                counters.has_active_tool = true;
+            }
+            if is_recent {
+                counters.last_event = Some(make_event(
+                    session,
+                    message,
+                    "tool.started",
+                    "info",
+                    &format!("Running {}", fallback_tool_name(&tool_name)),
+                    &tool_name,
+                ));
+            }
+        }
+    }
+}
+
+fn tool_part_status(part: &Value) -> Option<&str> {
+    let data = part.get("data").unwrap_or(part);
+    data.get("state")
+        .and_then(|state| state.get("status"))
+        .and_then(Value::as_str)
 }
 
 fn inspect_raw_text(
@@ -322,6 +413,14 @@ fn latest_assistant_finished(messages: &[Message]) -> bool {
         .find(|message| message.role == "assistant")
         .and_then(|message| message.finished_at)
         .is_some()
+}
+
+fn latest_assistant_active(messages: &[Message]) -> bool {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "assistant")
+        .is_some_and(|message| message.finished_at.is_none())
 }
 
 fn looks_like_error(lower: &str) -> bool {
@@ -577,7 +676,7 @@ pub fn apply_live_event(state: &mut PetState, event: &OpenCodeEvent) {
     }
 }
 
-fn extract_session_id(value: &Value) -> Option<String> {
+pub(crate) fn extract_session_id(value: &Value) -> Option<String> {
     value
         .get("properties")
         .and_then(|properties| find_string_key(properties, "sessionID"))
@@ -746,4 +845,76 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session() -> Session {
+        Session {
+            id: "ses_test".to_string(),
+            title: "Test session".to_string(),
+            directory: Some("/tmp/project".to_string()),
+            message_count: 1,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            cost: 0.0,
+            updated_at: 1_780_000_000_000,
+            created_at: 1_780_000_000_000,
+        }
+    }
+
+    fn assistant_message(parts: &str, finished_at: Option<i64>) -> Message {
+        Message {
+            id: "msg_test".to_string(),
+            session_id: "ses_test".to_string(),
+            role: "assistant".to_string(),
+            parts: parts.to_string(),
+            model: Some("test-model".to_string()),
+            created_at: 1_780_000_000_100,
+            finished_at,
+        }
+    }
+
+    #[test]
+    fn modern_running_tool_part_marks_session_working() {
+        let parts = r#"[{"type":"tool","data":{"type":"tool","tool":"open-websearch_search","state":{"status":"running"}}}]"#;
+        let (state, event) = analyze_session(&session(), &[assistant_message(parts, None)]);
+
+        assert_eq!(state.progress.status, "working");
+        assert_eq!(state.mood, "working");
+        assert_eq!(state.progress.total_tools, 1);
+        assert_eq!(state.progress.completed_tools, 0);
+        assert_eq!(state.progress.current_tool, "open-websearch_search");
+        assert_eq!(event.map(|item| item.event_type), Some("tool.started".to_string()));
+    }
+
+    #[test]
+    fn modern_completed_tool_part_counts_progress() {
+        let parts = r#"[{"type":"tool","data":{"type":"tool","tool":"exa_web_search_exa","state":{"status":"completed"}}},{"type":"step-finish","data":{"reason":"stop"}}]"#;
+        let (state, event) = analyze_session(&session(), &[assistant_message(parts, Some(1_780_000_000_500))]);
+
+        assert_eq!(state.progress.status, "completed");
+        assert_eq!(state.progress.total_tools, 1);
+        assert_eq!(state.progress.completed_tools, 1);
+        assert_eq!(state.progress.current_tool, "exa_web_search_exa");
+        assert_eq!(
+            event.map(|item| item.event_type),
+            Some("assistant.completed".to_string())
+        );
+    }
+
+    #[test]
+    fn modern_failed_tool_part_marks_session_error() {
+        let parts = r#"[{"type":"tool","data":{"type":"tool","tool":"open-websearch_search","state":{"status":"error"}}}]"#;
+        let (state, event) = analyze_session(&session(), &[assistant_message(parts, Some(1_780_000_000_500))]);
+
+        assert_eq!(state.progress.status, "error");
+        assert_eq!(state.mood, "error");
+        assert_eq!(state.progress.total_tools, 1);
+        assert_eq!(state.progress.completed_tools, 0);
+        assert_eq!(state.progress.current_tool, "open-websearch_search");
+        assert_eq!(event.map(|item| item.event_type), Some("tool.failed".to_string()));
+    }
 }

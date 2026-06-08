@@ -9,9 +9,9 @@ import {
   withAlpha,
 } from "./canvasPrimitives";
 import { CANVAS_HEIGHT, PIXEL_ALERT, officeLayout } from "./layout";
-import { activityDesks, visibleSessionCount } from "./model";
+import { petDesks, visibleSessionCount } from "./model";
 import { drawRoomStructure, drawWorkstationBackLayer, drawWorkstationFrontLayer } from "./room";
-import { compactCanvasText } from "./text";
+import { compactCanvasText, textVisualWidth } from "./text";
 import type {
   CatSpritePose,
   CatSpriteRegistry,
@@ -32,7 +32,7 @@ function deskHoverLines(desk: Desk): string[] {
 
   const status = desk.activityStatus ?? desk.status ?? "empty";
   const statusLabel = status === "working" ? "WORKING"
-    : status === "completed" || status === "followed" ? "DONE"
+    : status === "completed" || status === "followed" ? "READY"
     : status === "error" ? "NEEDS ATTENTION"
     : status === "quiet" ? "NO RESPONSE"
     : status === "drift" ? "OUT OF SYNC"
@@ -214,133 +214,88 @@ function drawWindows(ctx: CanvasRenderingContext2D, frame: number, layout: Offic
   withAlpha(ctx, 0.38, () => pixel(ctx, titleX - 7, 43, layout.title.length * 5 + 14, 2, "#55d69e"));
 }
 
-function activeTodos(todos: TodoItem[]): TodoItem[] {
-  return todos.filter((todo) => todo.status !== "completed" && todo.status !== "cancelled");
+function statusBubbleAccent(desk: Desk): string {
+  if (desk.awaitingUser) return "#ffd166";
+  const status = desk.activityStatus;
+  if (status === "working" || status === "followed") return "#8ecaff";
+  if (status === "error" || status === "drift" || status === "quiet") return PIXEL_ALERT;
+  if (status === "completed") return "#55d69e";
+  return desk.accent;
 }
 
-function todoEmptyLabel(todos: TodoItem[], completed: number): string {
-  if (todos.length === 0) return "NO TODO";
-  if (completed === todos.length) return "ALL DONE";
-  return "NO ACTIVE";
-}
-
-function drawTodoBubble(
+// One adaptive pixel bubble above each cat's head: status headline + (optional)
+// todo progress bar. Replaces the old side/bottom todo bubbles — one cat, one bubble.
+function drawStatusBubble(
   ctx: CanvasRenderingContext2D,
   desk: Desk,
   todos: TodoItem[],
   widthLimit: number,
+  compact: boolean,
 ) {
-  if (todos.length === 0) return;
+  const fontSize = compact ? 6 : 7;
+  const charWidth = fontSize * 0.62;
+  const padX = 7;
+  const padY = 5;
+  const dotSize = 5;
+  const lineHeight = fontSize + 5;
 
-  const completed = todos.filter((t) => t.status === "completed").length;
-  const active = activeTodos(todos);
-  const visible = active.slice(0, 3);
-  const progressLabel = `${completed}/${todos.length}`;
+  const accent = statusBubbleAccent(desk);
+  const fallback = compactCanvasText(desk.label, 16).toUpperCase();
+  const rawHeadline = (desk.bubbleHeadline ?? "").trim() || fallback;
+  const headline = compactCanvasText(rawHeadline, compact ? 16 : 28);
 
-  const lineHeight = 11;
-  const headerHeight = 14;
-  const padding = 6;
-  const bubbleWidth = 100;
-  const contentLines = Math.max(1, visible.length) + 1;
-  const bubbleHeight = headerHeight + contentLines * lineHeight + padding * 2;
-  const preferRight = desk.x + 50 + bubbleWidth <= widthLimit - 8;
-  const bubbleX = Math.round(preferRight ? desk.x + 50 : desk.x - 50 - bubbleWidth);
-  const bubbleY = Math.round(Math.min(Math.max(36, desk.y - bubbleHeight / 2), CANVAS_HEIGHT - bubbleHeight - 8));
+  const hasTodos = todos.length > 0;
+  const completed = hasTodos ? todos.filter((todo) => todo.status === "completed").length : 0;
+  const done = hasTodos && completed === todos.length;
+  const progressLabel = hasTodos ? `${completed}/${todos.length}` : "";
 
-  shadow(ctx, bubbleX + 3, bubbleY + bubbleHeight + 2, bubbleWidth, 6, 0.25);
+  const headlineWidth = textVisualWidth(headline) * charWidth + dotSize + 5;
+  const progressWidth = hasTodos ? 30 + progressLabel.length * charWidth : 0;
+  const innerWidth = Math.max(headlineWidth, progressWidth);
+  const bubbleWidth = Math.round(Math.min(widthLimit - 24, Math.max(compact ? 60 : 78, innerWidth + padX * 2)));
+  const bubbleHeight = Math.round(padY * 2 + lineHeight + (hasTodos ? lineHeight : 0));
+
+  const tailHeight = 5;
+  const headTop = desk.y - 46;
+  const bubbleX = Math.max(12, Math.min(widthLimit - bubbleWidth - 12, Math.round(desk.x - bubbleWidth / 2)));
+  const bubbleY = Math.max(78, Math.round(headTop - tailHeight - bubbleHeight - 2));
+
+  shadow(ctx, bubbleX + 3, bubbleY + bubbleHeight + 2, bubbleWidth, 6, 0.28);
   pixel(ctx, bubbleX, bubbleY, bubbleWidth, bubbleHeight, "#0a1416");
   pixel(ctx, bubbleX + 2, bubbleY + 2, bubbleWidth - 4, bubbleHeight - 4, "#162326");
-  strokeRect(ctx, bubbleX, bubbleY, bubbleWidth, bubbleHeight, "#3d5558");
+  strokeRect(ctx, bubbleX, bubbleY, bubbleWidth, bubbleHeight, "#33474c");
+  pixel(ctx, bubbleX, bubbleY, 3, bubbleHeight, accent);
 
-  pixel(ctx, bubbleX + 4, bubbleY + 4, bubbleWidth - 8, headerHeight, "#1a2e32");
-  text(ctx, "TODO", bubbleX + 8, bubbleY + 5, "#d8fff4", 7);
-  text(ctx, progressLabel, bubbleX + bubbleWidth - 28, bubbleY + 5, completed === todos.length ? "#55d69e" : "#8ecaff", 7);
+  const textX = bubbleX + padX;
+  const headlineY = bubbleY + padY;
+  pixel(ctx, textX, headlineY + 1, dotSize, dotSize, accent);
+  text(ctx, headline, textX + dotSize + 5, headlineY, "#d8fff4", fontSize);
 
-  const barX = bubbleX + 8;
-  const barY = bubbleY + headerHeight + 4;
-  const barWidth = bubbleWidth - 16;
-  const barHeight = 3;
-  pixel(ctx, barX, barY, barWidth, barHeight, "#1a2e32");
-  const fillWidth = Math.round((completed / Math.max(todos.length, 1)) * barWidth);
-  if (fillWidth > 0) {
-    pixel(ctx, barX, barY, fillWidth, barHeight, completed === todos.length ? "#55d69e" : "#8ecaff");
+  if (hasTodos) {
+    const rowY = headlineY + lineHeight;
+    const labelWidth = progressLabel.length * charWidth + 4;
+    const barX = textX;
+    const barWidth = Math.max(12, bubbleWidth - padX * 2 - labelWidth - 4);
+    const barY = rowY + 2;
+    pixel(ctx, barX, barY, barWidth, 3, "#1a2e32");
+    const fillWidth = Math.round((completed / Math.max(todos.length, 1)) * barWidth);
+    if (fillWidth > 0) pixel(ctx, barX, barY, fillWidth, 3, done ? "#55d69e" : "#8ecaff");
+    text(ctx, progressLabel, barX + barWidth + 4, rowY, done ? "#55d69e" : "#8ecaff", fontSize);
   }
 
-  let lineY = barY + barHeight + 4;
-  if (visible.length === 0) {
-    text(ctx, todoEmptyLabel(todos, completed), bubbleX + 8, lineY, completed === todos.length ? "#55d69e" : "#9fb4b8", 7);
-    lineY += lineHeight;
-  } else {
-    for (const todo of visible) {
-      const icon = todo.status === "in_progress" ? ">" : "[ ]";
-      const color = todo.status === "in_progress" ? "#ffd166" : "#9fb4b8";
-      const label = compactCanvasText(todo.content, 14);
-      text(ctx, icon, bubbleX + 8, lineY, color, 7);
-      text(ctx, label, bubbleX + 20, lineY, color, 7);
-      lineY += lineHeight;
-    }
-  }
-
-  const remaining = Math.max(0, active.length - visible.length);
-  if (remaining > 0) {
-    text(ctx, `+${remaining} more...`, bubbleX + 8, lineY, "#6d7d82", 6);
-  }
-
-  const tailX = preferRight ? bubbleX - 6 : bubbleX + bubbleWidth;
-  const tailY = bubbleY + Math.round(bubbleHeight / 2) - 3;
-  pixel(ctx, tailX, tailY, 6, 6, "#162326");
-  pixel(ctx, preferRight ? tailX - 2 : tailX + 6, tailY + 2, 2, 2, "#162326");
-}
-
-function drawDockedTodoCard(
-  ctx: CanvasRenderingContext2D,
-  desk: Desk,
-  todos: TodoItem[],
-) {
-  if (todos.length === 0) return;
-
-  const completed = todos.filter((t) => t.status === "completed").length;
-  const active = activeTodos(todos);
-  const activeTodo = active.find((t) => t.status === "in_progress") ?? active[0];
-  const progressLabel = `${completed}/${todos.length}`;
-  const cardWidth = 112;
-  const cardHeight = activeTodo ? 34 : 29;
-  const cardX = Math.round(desk.x - cardWidth / 2);
-  const cardY = Math.round(Math.min(desk.y + 63, CANVAS_HEIGHT - cardHeight - 16));
-
-  shadow(ctx, cardX + 3, cardY + cardHeight + 2, cardWidth, 5, 0.22);
-  pixel(ctx, cardX, cardY, cardWidth, cardHeight, "#0a1416");
-  pixel(ctx, cardX + 2, cardY + 2, cardWidth - 4, cardHeight - 4, "#162326");
-  strokeRect(ctx, cardX, cardY, cardWidth, cardHeight, "#33474c");
-
-  text(ctx, "TODO", cardX + 7, cardY + 5, "#d8fff4", 6);
-  text(ctx, progressLabel, cardX + cardWidth - progressLabel.length * 5 - 7, cardY + 5, completed === todos.length ? "#55d69e" : "#8ecaff", 6);
-
-  const barX = cardX + 7;
-  const barY = cardY + 15;
-  const barWidth = cardWidth - 14;
-  pixel(ctx, barX, barY, barWidth, 3, "#1a2e32");
-  const fillWidth = Math.round((completed / Math.max(todos.length, 1)) * barWidth);
-  if (fillWidth > 0) {
-    pixel(ctx, barX, barY, fillWidth, 3, completed === todos.length ? "#55d69e" : "#8ecaff");
-  }
-
-  if (activeTodo) {
-    const icon = activeTodo.status === "in_progress" ? ">" : "[ ]";
-    const color = activeTodo.status === "in_progress" ? "#ffd166" : "#9fb4b8";
-    text(ctx, icon, cardX + 7, cardY + 23, color, 6);
-    text(ctx, compactCanvasText(activeTodo.content, 13), cardX + 20, cardY + 23, color, 6);
-  } else {
-    text(ctx, todoEmptyLabel(todos, completed), cardX + 7, cardY + 22, completed === todos.length ? "#55d69e" : "#9fb4b8", 6);
-  }
+  const tailX = Math.max(bubbleX + 6, Math.min(bubbleX + bubbleWidth - 12, Math.round(desk.x - 3)));
+  const tailTop = bubbleY + bubbleHeight;
+  pixel(ctx, tailX, tailTop, 6, 3, "#162326");
+  pixel(ctx, tailX + 1, tailTop + 3, 3, 2, "#162326");
 }
 
 function drawDeskNameplate(ctx: CanvasRenderingContext2D, desk: Desk) {
   const label = compactCanvasText(desk.label, 12).toUpperCase();
+  const empty = !desk.sessionId || desk.status === "empty";
   const linked = desk.status === "linked";
   const drift = desk.status === "drift";
-  const dotColor = linked ? "#55d69e" : drift ? "#ffd166" : "#7d8c91";
-  const linkText = linked ? "LINKED" : drift ? "DRIFT" : "LOCAL";
+  const dotColor = empty ? "#7d8c91" : linked ? "#55d69e" : drift ? "#ffd166" : "#7d8c91";
+  const linkText = empty ? "BIND" : linked ? "LINKED" : drift ? "DRIFT" : "LOCAL";
   const w = Math.max(72, label.length * 6 + 30);
   const x = Math.round(desk.x - w / 2);
   const y = desk.y + 44;
@@ -402,6 +357,10 @@ function drawWorkstation(
 }
 
 function workstationHitBox(desk: Desk): HitBox | null {
+  if (!desk.sessionId && !desk.petId) return null;
+  if (!desk.sessionId && desk.petId) {
+    return { id: desk.petId, kind: "cat", x: desk.x - 64, y: desk.y - 52, width: 128, height: 118 };
+  }
   if (!desk.sessionId) return null;
   return { id: desk.sessionId, kind: "session", x: desk.x - 64, y: desk.y - 52, width: 128, height: 118 };
 }
@@ -467,6 +426,7 @@ function drawOfficeFooter(ctx: CanvasRenderingContext2D, layout: OfficeLayout, o
 export function renderOfficeScene({
   ctx,
   sessionLinks,
+  pets = [],
   activityItems,
   attentionItems,
   workspaceState,
@@ -478,12 +438,13 @@ export function renderOfficeScene({
   isWebviewOpen,
 }: RenderOfficeSceneInput): HitBox[] {
   const hoverSessionId = hoverHit?.kind === "session" ? hoverHit.id : null;
+  const hoverPetId = hoverHit?.kind === "cat" ? hoverHit.id : null;
   const layout = officeLayout(isWebviewOpen);
-  const liveDesks = activityDesks(layout.desks, activityItems, sessionLinks, focusedSessionId, attentionItems).map((desk) => ({
+  const liveDesks = petDesks(layout.desks, pets, activityItems, sessionLinks, focusedSessionId, attentionItems, sessionTodos).map((desk) => ({
     ...desk,
-    hovered: Boolean(desk.sessionId && desk.sessionId === hoverSessionId),
+    hovered: Boolean((desk.sessionId && desk.sessionId === hoverSessionId) || (desk.petId && desk.petId === hoverPetId)),
   }));
-  const overflowCount = Math.max(0, visibleSessionCount(activityItems, sessionLinks) - layout.desks.length);
+  const overflowCount = Math.max(0, visibleSessionCount(activityItems, sessionLinks, pets) - layout.desks.length);
 
   ctx.clearRect(0, 0, layout.width, CANVAS_HEIGHT);
   drawShell(ctx, layout);
@@ -493,15 +454,11 @@ export function renderOfficeScene({
   liveDesks.forEach((desk) => drawWorkstation(ctx, desk, frame, sprites));
   drawWorkstationFrontLayer(ctx, liveDesks, layout, frame);
   liveDesks.forEach((desk) => {
-    if (desk.sessionId && desk.status !== "empty") drawDeskNameplate(ctx, desk);
+    if (desk.sessionId || desk.petId) drawDeskNameplate(ctx, desk);
   });
   liveDesks.forEach((desk) => {
-    if (desk.sessionId && sessionTodos[desk.sessionId]?.length) {
-      if (isWebviewOpen) {
-        drawDockedTodoCard(ctx, desk, sessionTodos[desk.sessionId]);
-      } else {
-        drawTodoBubble(ctx, desk, sessionTodos[desk.sessionId], layout.width);
-      }
+    if (desk.sessionId && desk.status !== "empty") {
+      drawStatusBubble(ctx, desk, sessionTodos[desk.sessionId] ?? [], layout.width, isWebviewOpen);
     }
   });
   drawOfficeHint(ctx, layout, liveDesks, workspaceState);

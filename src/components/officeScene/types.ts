@@ -3,6 +3,7 @@ import type {
   OpenCodeAttentionItem,
   OpenCodeSessionLink,
   OpenCodeWorkspaceState,
+  PetConfig,
   TodoItem,
 } from "../../types";
 
@@ -35,7 +36,10 @@ export interface Desk {
   status?: "linked" | "drift" | "local" | "server" | "empty";
   activityStatus?: OpenCodeActivityItem["status"] | "linked" | "empty";
   phase?: string;
+  bubbleHeadline?: string;
   sessionId?: string;
+  petId?: string;
+  petName?: string;
   detail?: string;
   summary?: string;
   statusReason?: string;
@@ -73,6 +77,7 @@ export interface OfficeLayout {
 
 export interface OfficeStageRenderState {
   sessionLinks: OpenCodeSessionLink[];
+  pets?: PetConfig[];
   activityItems: OpenCodeActivityItem[];
   attentionItems: OpenCodeAttentionItem[];
   workspaceState: OpenCodeWorkspaceState | null;

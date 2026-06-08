@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, type MouseEvent, type PointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { CatSessionDigest, OpenCodeEvent, PetState } from "../types";
+import type { CatSessionDigest, OpenCodeEvent, PetConfig } from "../types";
 import { isTauriRuntime } from "../tauriEnv";
 
 // Only show the speech bubble for events newer than this; older events stay in
@@ -14,7 +14,7 @@ const DRAG_FALLBACK_RESET_MS = 1_500;
 type CatMood = "sleeping" | "idle" | "thinking" | "working" | "success" | "error" | "waiting";
 
 interface XiaoHeiProps {
-  petState: PetState;
+  petConfig: PetConfig;
   lastEvent: OpenCodeEvent | null;
   isChatOpen: boolean;
   canDragWindow: boolean;
@@ -22,19 +22,22 @@ interface XiaoHeiProps {
   onClick: () => void;
 }
 
-function getMood(petState: PetState, lastEvent: OpenCodeEvent | null, isChatOpen: boolean): CatMood {
+function getMood(
+  digest: CatSessionDigest,
+  hasBoundSession: boolean,
+  lastEvent: OpenCodeEvent | null,
+  isChatOpen: boolean,
+): CatMood {
   if (isChatOpen) return "idle";
-  if (lastEvent) {
+  if (hasBoundSession && lastEvent && lastEvent.session_id === digest.session_id) {
     if (lastEvent.severity === "error" || lastEvent.event_type.includes("error")) return "error";
     if (lastEvent.severity === "success" || lastEvent.event_type.includes("success")) return "success";
   }
-  const s = petState.progress.status;
-  if (s === "error") return "error";
-  if (s === "completed") return "success";
-  if (s === "working") return "working";
-  const m = petState.mood;
-  if (m === "sleeping") return "sleeping";
-  if (m === "working" || m === "curious") return "thinking";
+  if (!hasBoundSession || digest.phase === "unbound") return "sleeping";
+  if (digest.phase === "blocked") return "error";
+  if (digest.phase === "completed") return "success";
+  if (digest.phase === "working") return "working";
+  if (digest.phase === "waiting") return "thinking";
   return "idle";
 }
 
@@ -45,32 +48,78 @@ function spritePose(mood: CatMood): "idle" | "work" | "sleep" {
   return "idle";
 }
 
-export function XiaoHei({ petState, lastEvent, isChatOpen, canDragWindow, digest, onClick }: XiaoHeiProps) {
-  const mood = useMemo(() => getMood(petState, lastEvent, isChatOpen), [petState, lastEvent, isChatOpen]);
+function compactText(value: string | undefined, fallback: string, maxChars: number) {
+  const text = (value ?? "").split(/\s+/).filter(Boolean).join(" ").trim() || fallback;
+  const chars = Array.from(text);
+  return chars.length > maxChars ? `${chars.slice(0, maxChars - 1).join("")}...` : text;
+}
+
+function eventBubbleText(event: OpenCodeEvent | null) {
+  if (!event) return "";
+  const tool = compactText(event.tool_name, "工具", 22);
+  switch (event.event_type) {
+    case "tool.started":
+      return `正在跑 ${tool}`;
+    case "tool.completed":
+      return `${tool} 跑完了`;
+    case "tool.failed":
+      return `${tool} 运行失败`;
+    case "runtime.error":
+      return "OpenCode 报错了";
+    case "permission.asked":
+      return event.summary || "OpenCode 在等你确认权限";
+    case "assistant.completed":
+    case "session.idle":
+      return "这一轮可继续对话";
+    case "assistant.started":
+    case "session.working":
+    case "session.retry":
+      return "OpenCode 正在处理";
+    case "user.prompted":
+      return "OpenCode 收到新任务";
+    default:
+      return event.summary;
+  }
+}
+
+export function CatPet({ petConfig, lastEvent, isChatOpen, canDragWindow, digest, onClick }: XiaoHeiProps) {
+  const hasBoundSession = Boolean(petConfig.bound_session_id);
+  const mood = useMemo(
+    () => getMood(digest, hasBoundSession, lastEvent, isChatOpen),
+    [digest, hasBoundSession, lastEvent, isChatOpen],
+  );
   const dragStartRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
   const dragTimerRef = useRef<number | null>(null);
   const dragResetTimerRef = useRef<number | null>(null);
   const dragStartedRef = useRef(false);
   const suppressClickRef = useRef(false);
 
-  const isWorking = petState.progress.status === "working";
-  const toolName = petState.progress.current_tool;
-  const eventFresh = !!lastEvent && Date.now() - lastEvent.timestamp < FRESH_WINDOW_MS;
-  const bubbleText = isChatOpen
-    ? digest.headline
-    : eventFresh && lastEvent?.summary
-      ? lastEvent.summary
-      : digest.phase === "ready" && petState.progress.status === "idle"
+  const isWorking = hasBoundSession && digest.phase === "working";
+  const toolName = digest.current_tool;
+  const eventFresh = !!lastEvent
+    && lastEvent.session_id === petConfig.bound_session_id
+    && Date.now() - lastEvent.timestamp < FRESH_WINDOW_MS;
+  const freshBubbleText = eventFresh ? eventBubbleText(lastEvent) : "";
+  const bubbleText = !hasBoundSession
+    ? ""
+    : isChatOpen
+      ? digest.headline
+    : freshBubbleText
+      ? freshBubbleText
+      : digest.phase === "ready"
         ? ""
         : digest.headline;
   const chipText = isWorking && toolName ? toolName :
     digest.todo_total > 0 ? `${digest.todo_completed}/${digest.todo_total}` :
-    petState.progress.status === "error"     ? "error" :
-    petState.progress.status === "completed" ? "done ✓" :
-    digest.phase === "unbound" ? "bind" :
+    digest.phase === "blocked" ? "error" :
+    digest.phase === "completed" ? "ready" :
+    !hasBoundSession || digest.phase === "unbound" ? "bind" :
     mood === "sleeping" ? "sleeping" : "idle";
 
-  const sprite = `/pets/sprites/tuxedo-${spritePose(mood)}.png`;
+  const coat = petConfig.coat && ["tuxedo", "orange", "calico", "gray"].includes(petConfig.coat)
+    ? petConfig.coat
+    : "tuxedo";
+  const sprite = `/pets/sprites/${coat}-${spritePose(mood)}.png`;
 
   // Body micro-animation (reuse the existing keyframes; sleeping stays calm).
   const bodyAnim =
@@ -183,15 +232,15 @@ export function XiaoHei({ petState, lastEvent, isChatOpen, canDragWindow, digest
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerEnd}
       onPointerCancel={handlePointerEnd}
-      className={`relative flex flex-col items-center select-none border-0 bg-transparent p-0 outline-none group ${
+      className={`relative flex w-32 flex-col items-center select-none border-0 bg-transparent p-0 outline-none group ${
         canDragWindow ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
       }`}
-      title={canDragWindow ? `点击选择对话，拖动移动。${digest.detail}` : `点击选择对话。${digest.detail}`}
+      title={canDragWindow ? `${petConfig.name}: 点击打开，拖动移动。${digest.detail}` : `${petConfig.name}: 点击打开。${digest.detail}`}
       data-no-drag
     >
       {/* Speech bubble — ring opacity signals priority: /55 for error/success, /40 for neutral */}
       {!!bubbleText && (
-        <div className={`absolute -top-6 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-xl bg-[#0b1416]/95 px-2.5 py-1 text-[9px] font-semibold text-[#d8fff4] shadow-[0_4px_14px_rgba(0,0,0,0.55)] ring-1 max-w-[170px] truncate z-10 ${
+        <div className={`absolute left-1/2 top-0 z-10 max-w-[124px] -translate-x-1/2 -translate-y-[calc(100%+6px)] whitespace-normal break-words rounded-xl bg-[#0b1416]/95 px-2.5 py-1 text-center text-[9px] font-semibold leading-3 text-[#d8fff4] shadow-[0_4px_14px_rgba(0,0,0,0.55)] ring-1 ${
           mood === "error" ? "ring-[#e8755f]/55" : mood === "success" ? "ring-[#55d69e]/55" : "ring-[#33d1a0]/40"
         }`}>
           {bubbleText}
@@ -204,7 +253,7 @@ export function XiaoHei({ petState, lastEvent, isChatOpen, canDragWindow, digest
         src={sprite}
         width={96}
         height={96}
-        alt="XiaoHei"
+        alt={petConfig.name}
         draggable={false}
         className={`${bodyAnim} ${glow} transition-transform duration-200 group-hover:scale-[1.06]`}
         style={{ imageRendering: "pixelated" }}
@@ -213,9 +262,9 @@ export function XiaoHei({ petState, lastEvent, isChatOpen, canDragWindow, digest
       {/* Status chip */}
       <div className={`-mt-1 rounded-full px-2 py-0.5 text-[9px] font-bold transition-all duration-300 ${
         isWorking              ? "bg-blue-500/20 text-blue-300" :
-        petState.progress.status === "error"     ? "bg-red-500/20 text-red-300" :
-        petState.progress.status === "completed" ? "bg-green-500/20 text-green-300" :
-        digest.phase === "unbound" ? "bg-[#ffd166]/15 text-[#ffd166]/80" :
+        digest.phase === "blocked"     ? "bg-red-500/20 text-red-300" :
+        digest.phase === "completed" ? "bg-green-500/20 text-green-300" :
+        !hasBoundSession || digest.phase === "unbound" ? "bg-[#ffd166]/15 text-[#ffd166]/80" :
         "bg-white/5 text-white/25"
       }`}>
         {chipText}

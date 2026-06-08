@@ -12,6 +12,7 @@ import type {
   OpenCodeOfficeSnapshot,
   OpenCodeSessionLink,
   OpenCodeWorkspaceState,
+  PetConfig,
   TodoItem,
 } from "../types";
 import { isTauriRuntime } from "../tauriEnv";
@@ -26,6 +27,9 @@ const SCENE_FADE_TRANSITION = { duration: 0.18, delay: 0.04, ease: "easeOut" } a
 const OFFICE_SKELETON_DESKS = [0, 1, 2, 3, 4, 5];
 const WEBVIEW_DOCK_DELAY_MS = 70;
 const OPENING_STATE_MS = 520;
+const OFFICE_REFRESH_INTERVAL_MS = 6000;
+const OFFICE_WEBVIEW_REFRESH_INTERVAL_MS = 12000;
+type WebviewLayout = "dock" | "focus";
 
 function OfficeSceneSkeleton({ docked }: { docked: boolean }) {
   return (
@@ -118,6 +122,8 @@ function WebviewDockPreview({
 
 interface CatOfficeProps {
   isOpen: boolean;
+  pets: PetConfig[];
+  activePet?: PetConfig;
   event: OpenCodeEvent | null;
   eventHistory: OpenCodeEvent[];
   workspaceState: OpenCodeWorkspaceState | null;
@@ -130,11 +136,15 @@ interface CatOfficeProps {
   onClose: () => void;
   onRefreshOfficeState: (source?: string) => Promise<OpenCodeOfficeSnapshot | null>;
   onBindSession: (sessionId: string | null) => Promise<OpenCodeAlignmentResult | null>;
+  onCreatePetSession: (petId: string, title?: string) => Promise<OpenCodeAlignmentResult | null>;
+  onOpenSessionPicker: (petId?: string) => void;
   onOpenSettings: (focus?: "database" | "server") => void;
 }
 
 export function CatOffice({
   isOpen,
+  pets,
+  activePet,
   sessionLinks,
   activityItems,
   attentionItems,
@@ -148,12 +158,16 @@ export function CatOffice({
   onOpenSettings,
   onRefreshOfficeState,
   onBindSession,
+  onCreatePetSession,
+  onOpenSessionPicker,
 }: CatOfficeProps) {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [webviewSessionId, setWebviewSessionId] = useState<string | null>(null);
+  const [webviewLayout, setWebviewLayout] = useState<WebviewLayout>("dock");
   const [openingSessionId, setOpeningSessionId] = useState<string | null>(null);
   const [bindingSessionId, setBindingSessionId] = useState<string | null>(null);
   const [bindingMessage, setBindingMessage] = useState<string | null>(null);
+  const [creatingSession, setCreatingSession] = useState(false);
   const selectionSequenceRef = useRef(0);
   const webviewOpenTimerRef = useRef<number | null>(null);
   const openingTimerRef = useRef<number | null>(null);
@@ -198,17 +212,19 @@ export function CatOffice({
     serverUrl: string,
     directory: string,
     selectionSequence: number,
+    layout: WebviewLayout = "dock",
   ) => {
     if (!isTauriRuntime()) return false;
 
     const webviewUrl = `${serverUrl}/${encodeDirectory(directory)}/session/${sessionId}`;
     clearWebviewTimers();
     setWebviewSessionId(sessionId);
+    setWebviewLayout(layout);
     setOpeningSessionId(sessionId);
     webviewOpenTimerRef.current = window.setTimeout(() => {
       webviewOpenTimerRef.current = null;
       if (selectionSequence !== selectionSequenceRef.current) return;
-      void invoke("open_embedded_webview", { url: webviewUrl, title: "OpenCode" })
+      void invoke("open_embedded_webview", { url: webviewUrl, title: "OpenCode", layout })
         .then(() => {
           if (selectionSequence !== selectionSequenceRef.current) return;
           openingTimerRef.current = window.setTimeout(() => {
@@ -252,37 +268,70 @@ export function CatOffice({
     setSelectedSessionId(sessionId);
     const selectionSequence = selectionSequenceRef.current + 1;
     selectionSequenceRef.current = selectionSequence;
-    setBindingSessionId(sessionId);
     setBindingMessage(null);
     clearWebviewTimers();
     setWebviewSessionId(null);
+    setWebviewLayout("dock");
     setOpeningSessionId(null);
     void closeEmbeddedWebview();
+    setBindingMessage("已聚焦这只猫的对话");
+  };
 
+  const handleCreateSession = async () => {
+    if (!activePet || bindingSessionId || creatingSession) return;
+    setCreatingSession(true);
+    setBindingMessage(null);
+    selectionSequenceRef.current += 1;
+    clearWebviewTimers();
+    setWebviewSessionId(null);
+    setWebviewLayout("dock");
+    setOpeningSessionId(null);
+    void closeEmbeddedWebview();
     try {
-      const result = await onBindSession(sessionId);
-      if (selectionSequence !== selectionSequenceRef.current) return;
-      if (!result) {
-        setBindingMessage("Bind failed");
-        setSelectedSessionId(null);
+      const result = await onCreatePetSession(activePet.id);
+      if (!result?.selected_session_id) {
+        setBindingMessage("新建对话失败");
         return;
       }
-      setBindingMessage(result.tui_selected ? "Focused in OpenCode" : "Bound locally");
+      setSelectedSessionId(result.selected_session_id);
+      setBindingMessage("已新建并绑定给这只猫");
+      await onRefreshOfficeState("create-session");
     } catch (e) {
-      console.error("Failed to bind session:", e);
-      if (selectionSequence === selectionSequenceRef.current) {
-        setBindingMessage("Bind failed");
-        setSelectedSessionId(null);
-      }
+      console.error("Failed to create session:", e);
+      setBindingMessage("新建对话失败");
     } finally {
-      if (selectionSequence === selectionSequenceRef.current) {
-        setBindingSessionId(null);
+      setCreatingSession(false);
+    }
+  };
+
+  const handleUnbindActivePet = async () => {
+    if (!activePet) return;
+    setBindingSessionId(activePet.bound_session_id ?? activePet.id);
+    setBindingMessage(null);
+    selectionSequenceRef.current += 1;
+    clearWebviewTimers();
+    setWebviewSessionId(null);
+    setWebviewLayout("dock");
+    setOpeningSessionId(null);
+    void closeEmbeddedWebview();
+    try {
+      const result = await onBindSession(null);
+      if (!result) {
+        setBindingMessage("解绑失败");
+        return;
       }
+      setSelectedSessionId(null);
+      setBindingMessage("已解绑，猫猫先休息");
+    } catch (e) {
+      console.error("Failed to unbind session:", e);
+      setBindingMessage("解绑失败");
+    } finally {
+      setBindingSessionId(null);
     }
   };
 
   const handleOpenWebview = () => {
-    const sessionId = selectedSessionId ?? workspaceState?.bound_session_id ?? workspaceState?.session?.id;
+    const sessionId = selectedSessionId ?? activePet?.bound_session_id;
     if (!sessionId) return;
     const selectionSequence = selectionSequenceRef.current + 1;
     selectionSequenceRef.current = selectionSequence;
@@ -293,7 +342,23 @@ export function CatOffice({
     }
     setSelectedSessionId(sessionId);
     setBindingMessage(null);
-    openSessionWebview(sessionId, target.serverUrl, target.directory, selectionSequence);
+    openSessionWebview(sessionId, target.serverUrl, target.directory, selectionSequence, "dock");
+  };
+
+  const handleToggleWebviewLayout = () => {
+    const sessionId = webviewSessionId ?? selectedSessionId ?? activePet?.bound_session_id;
+    if (!sessionId) return;
+    const target = fastWebviewTarget(sessionId);
+    if (!target) {
+      setBindingMessage("OpenCode web is not available for this session");
+      return;
+    }
+    const nextLayout: WebviewLayout = webviewLayout === "focus" ? "dock" : "focus";
+    const selectionSequence = selectionSequenceRef.current + 1;
+    selectionSequenceRef.current = selectionSequence;
+    setSelectedSessionId(sessionId);
+    setBindingMessage(null);
+    openSessionWebview(sessionId, target.serverUrl, target.directory, selectionSequence, nextLayout);
   };
 
   const handleCloseWebview = (clearSelection = false) => {
@@ -301,6 +366,7 @@ export function CatOffice({
     clearWebviewTimers();
     if (clearSelection) setSelectedSessionId(null);
     setWebviewSessionId(null);
+    setWebviewLayout("dock");
     setOpeningSessionId(null);
     void closeEmbeddedWebview();
   };
@@ -316,6 +382,7 @@ export function CatOffice({
     clearWebviewTimers();
     setSelectedSessionId(null);
     setWebviewSessionId(null);
+    setWebviewLayout("dock");
     setOpeningSessionId(null);
     void closeEmbeddedWebview();
   }, [isOpen]);
@@ -326,19 +393,35 @@ export function CatOffice({
 
   useEffect(() => {
     if (!isOpen) return;
-    setSelectedSessionId((current) => current ?? workspaceState?.bound_session_id ?? workspaceState?.session?.id ?? null);
-  }, [isOpen, workspaceState?.bound_session_id, workspaceState?.session?.id]);
+    setSelectedSessionId((current) => current ?? activePet?.bound_session_id ?? null);
+  }, [isOpen, activePet?.bound_session_id]);
 
-  const focusedSessionId = selectedSessionId ?? workspaceState?.bound_session_id ?? workspaceState?.session?.id ?? null;
+  const focusedSessionId = selectedSessionId ?? activePet?.bound_session_id ?? null;
   const selectedLink = sessionLinks?.find((l) => l.id === focusedSessionId);
-  const selectedTitle = selectedLink?.local?.title || selectedLink?.server?.title;
+  const selectedActivity = activityItems.find((item) => item.id === focusedSessionId);
+  const selectedTitle =
+    selectedLink?.local?.title
+    || selectedLink?.server?.title
+    || selectedActivity?.title
+    || workspaceState?.session?.title;
   const selectedTodos = focusedSessionId ? sessionTodos[focusedSessionId] : undefined;
   const selectedCompleted = selectedTodos?.filter((t) => t.status === "completed").length ?? 0;
   const selectedTotal = selectedTodos?.length ?? 0;
-
   const isSyncing = officeSync.status === "syncing";
-  const isWebviewDocked = Boolean(webviewSessionId);
+  const isWebviewOpen = Boolean(webviewSessionId);
+  const isWebviewDocked = isWebviewOpen && webviewLayout === "dock";
+  const isWebviewFocused = isWebviewOpen && webviewLayout === "focus";
   const isOpeningWebview = Boolean(openingSessionId);
+
+  useEffect(() => {
+    if (!isOpen || !focusedSessionId) return;
+    const intervalMs = isWebviewOpen ? OFFICE_WEBVIEW_REFRESH_INTERVAL_MS : OFFICE_REFRESH_INTERVAL_MS;
+    const timer = window.setInterval(() => {
+      if (officeSync.status === "syncing") return;
+      void onRefreshOfficeState("office-watch");
+    }, intervalMs);
+    return () => window.clearInterval(timer);
+  }, [focusedSessionId, isOpen, isWebviewOpen, officeSync.status, onRefreshOfficeState]);
 
   return (
     <AnimatePresence>
@@ -359,11 +442,12 @@ export function CatOffice({
             <motion.div
               className="absolute inset-0"
               initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
+              animate={{ opacity: isWebviewFocused ? 0 : 1 }}
               transition={SCENE_FADE_TRANSITION}
             >
               <CatOfficeScene
                 cats={[{ id: "xiaohei", name: "XiaoHei", provider: "OpenCode", status: "idle", accent: "#33d1a0", face: "black" }]}
+                pets={pets}
                 sessionLinks={sessionLinks}
                 activityItems={activityItems}
                 attentionItems={attentionItems}
@@ -372,9 +456,9 @@ export function CatOffice({
                 eventHistory={eventHistory}
                 sessionTodos={sessionTodos}
                 focusedSessionId={focusedSessionId}
-                isWebviewOpen={isWebviewDocked}
+                isWebviewOpen={isWebviewOpen}
                 rightInset={isWebviewDocked ? EMBEDDED_WEBVIEW_WIDTH : 0}
-                onSelectCat={() => setSelectedSessionId(workspaceState?.bound_session_id ?? null)}
+                onSelectCat={(petId) => onOpenSessionPicker(petId)}
                 onSelectSession={handleSelectSession}
                 onRunSessionAction={() => {}}
                 onRunOpsAction={() => {}}
@@ -396,7 +480,7 @@ export function CatOffice({
             onPointerDown={(e) => void startWindowDrag(e)}
           >
             <div className="min-w-0 flex items-center gap-3">
-              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/60">Cat Office</p>
+              <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/60">{activePet?.name ?? "Cat Office"}</p>
               {(selectedTitle || digest.session_id) && (
                 <div className="flex items-center gap-2 rounded-md border border-[#33d1a0]/30 bg-[#33d1a0]/10 px-2.5 py-1">
                   <span className="h-1.5 w-1.5 rounded-full bg-[#33d1a0]" />
@@ -407,7 +491,7 @@ export function CatOffice({
                 </div>
               )}
               <div className="hidden max-w-[380px] truncate text-[11px] font-semibold text-[#9fb4b8]/76 lg:block">
-                {bindingSessionId ? "Binding session..." : bindingMessage ?? digest.headline}
+                {creatingSession ? "正在新建对话..." : bindingSessionId ? "正在连接..." : bindingMessage ?? digest.headline}
               </div>
               <AnimatePresence>
                 {isOpeningWebview && (
@@ -426,22 +510,62 @@ export function CatOffice({
             <div className="flex shrink-0 items-center gap-2">
               <AnimatePresence initial={false}>
                 {webviewSessionId && (
-                  <motion.button
-                    type="button"
-                    onClick={() => handleCloseWebview(false)}
-                    className="flex h-8 items-center gap-1.5 rounded-md border border-[#ff8a6b]/40 bg-[#ff8a6b]/15 px-3 text-[11px] font-bold text-[#ff8a6b] backdrop-blur-md hover:border-[#ff8a6b]/60 hover:bg-[#ff8a6b]/25 transition-colors"
+                  <motion.div
+                    className="flex items-center gap-2"
                     initial={{ opacity: 0, x: 12 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: 8 }}
                     transition={DOCK_TRANSITION}
                   >
-                    <svg viewBox="0 0 12 12" width="8" height="8" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M1 1l10 10M11 1 1 11" strokeLinecap="round" />
-                    </svg>
-                    Close Web
-                  </motion.button>
+                    <button
+                      type="button"
+                      onClick={handleToggleWebviewLayout}
+                      className="flex h-8 items-center gap-1.5 rounded-md border border-[#55d69e]/40 bg-[#55d69e]/15 px-3 text-[11px] font-black text-[#d8fff4] backdrop-blur-md hover:border-[#55d69e]/60 hover:bg-[#55d69e]/24 transition-colors"
+                    >
+                      {webviewLayout === "focus" ? "分屏" : "全屏"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleCloseWebview(false)}
+                      className="flex h-8 items-center gap-1.5 rounded-md border border-[#ff8a6b]/40 bg-[#ff8a6b]/15 px-3 text-[11px] font-bold text-[#ff8a6b] backdrop-blur-md hover:border-[#ff8a6b]/60 hover:bg-[#ff8a6b]/25 transition-colors"
+                    >
+                      <svg viewBox="0 0 12 12" width="8" height="8" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M1 1l10 10M11 1 1 11" strokeLinecap="round" />
+                      </svg>
+                      Close Web
+                    </button>
+                  </motion.div>
                 )}
               </AnimatePresence>
+              {!webviewSessionId && activePet && (
+                <button
+                  type="button"
+                  disabled={creatingSession || Boolean(bindingSessionId)}
+                  onClick={() => void handleCreateSession()}
+                  className="rounded-md border border-[#55d69e]/38 bg-[#55d69e]/14 px-3 py-1.5 text-[11px] font-black text-[#d8fff4] backdrop-blur-md hover:border-[#55d69e]/60 hover:bg-[#55d69e]/22 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+                >
+                  {creatingSession ? "新建中..." : "新建对话"}
+                </button>
+              )}
+              {!webviewSessionId && activePet && (
+                <button
+                  type="button"
+                  onClick={() => onOpenSessionPicker(activePet.id)}
+                  className="rounded-md border border-[#9fd7df]/25 bg-[#071012]/80 px-3 py-1.5 text-[11px] font-bold text-[#d7efe8] backdrop-blur-md hover:border-[#9fd7df]/40 hover:bg-[#d7efe8]/10 hover:text-white transition-colors"
+                >
+                  换绑
+                </button>
+              )}
+              {!webviewSessionId && activePet?.bound_session_id && (
+                <button
+                  type="button"
+                  disabled={Boolean(bindingSessionId)}
+                  onClick={() => void handleUnbindActivePet()}
+                  className="rounded-md border border-[#ff8a6b]/38 bg-[#ff8a6b]/14 px-3 py-1.5 text-[11px] font-black text-[#ffd2c6] backdrop-blur-md hover:border-[#ff8a6b]/60 hover:bg-[#ff8a6b]/22 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+                >
+                  解绑
+                </button>
+              )}
               {!webviewSessionId && focusedSessionId && (
                 <button
                   type="button"

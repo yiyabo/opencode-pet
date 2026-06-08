@@ -6,7 +6,7 @@ the image host. The API key is read from the IMG_API_KEY environment variable so
 it never gets hard-coded into a committed file.
 
 Usage:
-    export IMG_API_KEY='sk-...your key...'
+    export IMG_API_KEY='YOUR_IMAGE_API_KEY'
     python3 scripts/gen_cat_sprites.py            # generate the trial set
     python3 scripts/gen_cat_sprites.py --all      # generate the full set later
 
@@ -105,7 +105,7 @@ def main() -> int:
 
     key = os.environ.get("IMG_API_KEY")
     if not key:
-        print("ERROR: set IMG_API_KEY env var first:  export IMG_API_KEY='sk-...'")
+        print("ERROR: set IMG_API_KEY env var first:  export IMG_API_KEY='YOUR_IMAGE_API_KEY'")
         return 2
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)

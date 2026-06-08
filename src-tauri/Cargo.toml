@@ -1,8 +1,9 @@
 [package]
 name = "opencode-pet"
-version = "0.1.0"
-description = "A cute cat pet for OpenCode"
-authors = ["you"]
+version = "0.3.0"
+description = "A local desktop cat companion for monitoring OpenCode sessions"
+authors = ["opencode-pet contributors"]
+license = "MIT"
 edition = "2021"
 
 [lib]

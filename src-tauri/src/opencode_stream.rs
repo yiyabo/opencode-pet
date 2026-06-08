@@ -115,7 +115,7 @@ fn flush_sse_event(app: &AppHandle, data_lines: &mut Vec<String>) {
 
 fn handle_server_event(app: &AppHandle, raw: &Value) {
     mark_stream_event(app);
-    let Some(session) = current_watched_session(app) else {
+    let Some(session) = watched_session_for_event(app, raw) else {
         return;
     };
     let Some(event) = events::live_event_from_server(raw, &session) else {
@@ -124,8 +124,11 @@ fn handle_server_event(app: &AppHandle, raw: &Value) {
 
     {
         let state = app.state::<AppState>();
-        let mut pet_state = state.pet_state.lock().unwrap();
-        events::apply_live_event(&mut pet_state, &event);
+        let active_bound_session_id = state.bound_session_id.lock().unwrap().clone();
+        if active_bound_session_id.as_deref() == Some(event.session_id.as_str()) {
+            let mut pet_state = state.pet_state.lock().unwrap();
+            events::apply_live_event(&mut pet_state, &event);
+        }
     }
     crate::record_opencode_event(app, &event);
 
@@ -186,16 +189,21 @@ fn emit_stream_state(app: &AppHandle, stream_state: &crate::OpenCodeStreamState)
     }
 }
 
-fn current_watched_session(app: &AppHandle) -> Option<Session> {
+fn watched_session_for_event(app: &AppHandle, raw: &Value) -> Option<Session> {
+    let event_session_id = events::extract_session_id(raw)?;
     let state = app.state::<AppState>();
     let db_path = state.db_path.lock().unwrap().clone()?;
-    let bound_session_id = state.bound_session_id.lock().unwrap().clone();
-
-    if let Some(session_id) = bound_session_id {
-        db::get_session(&db_path, &session_id).ok()
-    } else {
-        db::get_latest_session(&db_path).ok()
+    let is_bound_to_pet = state
+        .pet_configs
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|config| config.bound_session_id.as_deref() == Some(event_session_id.as_str()));
+    if !is_bound_to_pet {
+        return None;
     }
+
+    db::get_session(&db_path, &event_session_id).ok()
 }
 
 fn current_server_url(app: &AppHandle) -> String {

@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties, type PointerEvent } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type PointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AnimatePresence, motion } from "framer-motion";
 import type {
@@ -8,6 +8,7 @@ import type {
   OpenCodeActivityItem,
   OpenCodeSessionLink,
   OpenCodeWorkspaceState,
+  PetConfig,
   SessionChoice,
   TodoItem,
 } from "../types";
@@ -17,52 +18,63 @@ import { buildSessionChoices } from "../opencodeDigest";
 interface SessionPickerProps {
   isOpen: boolean;
   digest: CatSessionDigest;
+  targetPet?: PetConfig;
   workspaceState: OpenCodeWorkspaceState | null;
   sessionLinks: OpenCodeSessionLink[];
   activityItems: OpenCodeActivityItem[];
   sessionTodos: Record<string, TodoItem[]>;
   officeSync: OfficeSyncState;
   onClose: () => void;
-  onOpenOffice: () => void;
+  onOpenOffice: (petId?: string, force?: boolean) => void;
   onOpenSettings: (focus?: "database" | "server") => void;
   onRefreshOfficeState: (source?: string) => Promise<unknown>;
   onBindSession: (sessionId: string | null) => Promise<OpenCodeAlignmentResult | null>;
+  onBindPetSession: (petId: string, sessionId: string | null) => Promise<OpenCodeAlignmentResult | null>;
+  onCreatePetSession: (petId: string, title?: string) => Promise<OpenCodeAlignmentResult | null>;
 }
 
 function statusStyle(choice: SessionChoice): CSSProperties {
   if (choice.is_bound) {
     return { backgroundColor: "rgba(18, 50, 43, 0.78)", borderColor: "rgba(85, 214, 158, 0.55)", color: "#d8fff4" };
   }
-  if (choice.status === "working") {
-    return { backgroundColor: "rgba(16, 42, 56, 0.74)", borderColor: "rgba(142, 202, 255, 0.45)", color: "#dff6ff" };
-  }
-  if (choice.status === "error" || choice.status === "drift" || choice.status === "quiet") {
-    return { backgroundColor: "rgba(42, 36, 22, 0.74)", borderColor: "rgba(255, 209, 102, 0.45)", color: "#fff1bf" };
+  if (choice.is_connected) {
+    return { backgroundColor: "rgba(16, 42, 36, 0.7)", borderColor: "rgba(85, 214, 158, 0.26)", color: "#d8fff4" };
   }
   if (!choice.is_bindable) {
     return { backgroundColor: "rgba(17, 25, 28, 0.62)", borderColor: "rgba(159, 180, 184, 0.18)", color: "#9fb4b8" };
   }
-  return { backgroundColor: "rgba(16, 27, 30, 0.72)", borderColor: "rgba(159, 180, 184, 0.24)", color: "#d7efe8" };
+  return { backgroundColor: "rgba(18, 25, 25, 0.72)", borderColor: "rgba(255, 209, 102, 0.24)", color: "#d7efe8" };
 }
 
 function statusDot(choice: SessionChoice) {
   if (choice.is_bound) return "bg-[#55d69e]";
-  if (choice.status === "working") return "bg-[#8ecaff]";
-  if (choice.status === "error" || choice.status === "drift" || choice.status === "quiet") return "bg-[#ffd166]";
-  if (!choice.is_bindable) return "bg-[#6f7f84]";
+  if (choice.is_connected) return "bg-[#55d69e]/75";
   return "bg-[#9fb4b8]";
 }
 
-function choiceMeta(choice: SessionChoice) {
-  if (!choice.is_bindable) return "server only";
-  if (choice.is_bound) return "bound";
-  if (choice.is_current) return "current";
-  return choice.status;
+function connectionLabel(choice: SessionChoice) {
+  return choice.is_connected ? "已绑定" : "可绑定";
+}
+
+function connectionBadgeStyle(choice: SessionChoice): CSSProperties {
+  if (choice.is_connected) {
+    return {
+      backgroundColor: "rgba(85, 214, 158, 0.12)",
+      borderColor: "rgba(85, 214, 158, 0.34)",
+      color: "#d8fff4",
+    };
+  }
+  return {
+    backgroundColor: "rgba(159, 180, 184, 0.1)",
+    borderColor: "rgba(159, 180, 184, 0.24)",
+    color: "#b9cacc",
+  };
 }
 
 export function SessionPicker({
   isOpen,
   digest,
+  targetPet,
   workspaceState,
   sessionLinks,
   activityItems,
@@ -73,15 +85,29 @@ export function SessionPicker({
   onOpenSettings,
   onRefreshOfficeState,
   onBindSession,
+  onBindPetSession,
+  onCreatePetSession,
 }: SessionPickerProps) {
   const [bindingSessionId, setBindingSessionId] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<"connect" | "disconnect" | null>(null);
   const [bindingError, setBindingError] = useState<string | null>(null);
+  const [newSessionTitle, setNewSessionTitle] = useState("");
+  const [creatingSession, setCreatingSession] = useState(false);
   const choices = useMemo(
     () => buildSessionChoices(sessionLinks, activityItems, sessionTodos),
     [sessionLinks, activityItems, sessionTodos],
   );
-  const hasBoundSession = Boolean(workspaceState?.bound_session_id);
+  const hasBoundSession = targetPet ? Boolean(targetPet.bound_session_id) : Boolean(workspaceState?.bound_session_id);
   const isSyncing = officeSync.status === "syncing";
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setBindingSessionId(null);
+    setPendingAction(null);
+    setBindingError(null);
+    setNewSessionTitle("");
+    setCreatingSession(false);
+  }, [isOpen]);
 
   const startWindowDrag = async (event: PointerEvent<HTMLElement>) => {
     if (event.button !== 0) return;
@@ -92,18 +118,45 @@ export function SessionPicker({
   };
 
   const bindChoice = async (choice: SessionChoice) => {
-    if (!choice.is_bindable || bindingSessionId) return;
+    const isPetBound = targetPet?.bound_session_id === choice.id || (!targetPet && choice.is_bound);
+    if ((!choice.is_bindable && !isPetBound) || bindingSessionId || creatingSession) return;
     setBindingError(null);
     setBindingSessionId(choice.id);
+    const action = isPetBound ? "disconnect" : "connect";
+    const nextSessionId = action === "disconnect" ? null : choice.id;
+    setPendingAction(action);
     try {
-      const result = await onBindSession(choice.id);
+      const result = targetPet
+        ? await onBindPetSession(targetPet.id, nextSessionId)
+        : await onBindSession(nextSessionId);
       if (!result) {
-        setBindingError("绑定失败，OpenCode 没有返回可用状态。");
+        setBindingError(action === "disconnect" ? "停止跟踪失败，OpenCode 没有返回可用状态。" : "连接失败，OpenCode 没有返回可用状态。");
       }
     } catch (error) {
       setBindingError(String(error));
     } finally {
       setBindingSessionId(null);
+      setPendingAction(null);
+    }
+  };
+
+  const createAndBindSession = async () => {
+    if (!targetPet || bindingSessionId || creatingSession) return;
+    setBindingError(null);
+    setCreatingSession(true);
+    try {
+      const result = await onCreatePetSession(targetPet.id, newSessionTitle);
+      if (!result) {
+        setBindingError("新建对话失败，OpenCode 没有返回可用状态。");
+        return;
+      }
+      setNewSessionTitle("");
+      await onRefreshOfficeState("create-session");
+      onOpenOffice(targetPet.id, true);
+    } catch (error) {
+      setBindingError(String(error));
+    } finally {
+      setCreatingSession(false);
     }
   };
 
@@ -124,7 +177,9 @@ export function SessionPicker({
           >
             <div className="min-w-0">
               <div className="text-[10px] font-black uppercase tracking-[0.22em] text-[#89b9c3]/70">Focus OpenCode</div>
-              <div className="mt-1 truncate text-sm font-black text-[#d8fff4]">{digest.headline}</div>
+              <div className="mt-1 truncate text-sm font-black text-[#d8fff4]">
+                {targetPet ? `给 ${targetPet.name} 绑定对话` : digest.headline}
+              </div>
             </div>
             <button
               type="button"
@@ -138,7 +193,8 @@ export function SessionPicker({
             </button>
           </div>
 
-          <div className="grid h-[calc(100%-57px)] grid-rows-[auto_1fr_auto] gap-3 p-4">
+            <div className="grid h-[calc(100%-57px)] grid-rows-[auto_1fr_auto] gap-3 p-4">
+            <div className="grid gap-3">
               <div
                 className="rounded-md border p-3"
                 style={{ backgroundColor: "rgba(11, 24, 25, 0.78)", borderColor: "rgba(51, 209, 160, 0.22)" }}
@@ -165,6 +221,38 @@ export function SessionPicker({
               )}
             </div>
 
+              <form
+                className="rounded-md border border-[#55d69e]/22 bg-[#0b1819]/72 p-3"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void createAndBindSession();
+                }}
+              >
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#55d69e]/75">New Session</div>
+                    <div className="mt-0.5 truncate text-xs font-black text-[#d8fff4]">
+                      新建给 {targetPet?.name ?? "这只猫"}
+                    </div>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={!targetPet || creatingSession || Boolean(bindingSessionId)}
+                    className="shrink-0 rounded-md border border-[#55d69e]/42 bg-[#55d69e]/14 px-3 py-1.5 text-[11px] font-black text-[#d8fff4] hover:border-[#55d69e]/65 hover:bg-[#55d69e]/22 disabled:cursor-not-allowed disabled:border-[#9fb4b8]/16 disabled:bg-[#9fb4b8]/8 disabled:text-[#9fb4b8]/45 transition-colors"
+                  >
+                    {creatingSession ? "创建中..." : "新建并绑定"}
+                  </button>
+                </div>
+                <input
+                  value={newSessionTitle}
+                  onChange={(event) => setNewSessionTitle(event.target.value)}
+                  disabled={creatingSession}
+                  placeholder={`${targetPet?.name ?? "猫猫"} 的新任务`}
+                  className="h-8 w-full rounded-md border border-[#9fd7df]/18 bg-black/24 px-2.5 text-xs font-semibold text-[#d8fff4] outline-none placeholder:text-[#9fb4b8]/44 focus:border-[#55d69e]/55 disabled:cursor-not-allowed disabled:opacity-50"
+                />
+              </form>
+            </div>
+
             <div className="min-h-0 overflow-y-auto pr-1">
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-[10px] font-black uppercase tracking-[0.18em] text-[#89b9c3]/68">Sessions</span>
@@ -177,23 +265,35 @@ export function SessionPicker({
               ) : (
                 <div className="space-y-2">
                   {choices.map((choice) => {
+                    const isPetBound = targetPet?.bound_session_id === choice.id || (!targetPet && choice.is_bound);
+                    const displayChoice = {
+                      ...choice,
+                      is_bound: isPetBound,
+                      is_connected: isPetBound,
+                    };
                     const busy = bindingSessionId === choice.id;
+                    const busyLabel = pendingAction === "disconnect" ? "正在停止" : "正在连接";
                     return (
                       <button
                         key={choice.id}
                         type="button"
-                        disabled={!choice.is_bindable || Boolean(bindingSessionId)}
+                        disabled={(!choice.is_bindable && !isPetBound) || Boolean(bindingSessionId) || creatingSession}
                         onClick={() => void bindChoice(choice)}
                         className={`w-full rounded-md border p-3 text-left transition-all ${
-                          choice.is_bindable ? "hover:border-[#d8fff4]/42 hover:bg-[#17282b]" : "cursor-not-allowed opacity-65"
+                          choice.is_bindable || isPetBound ? "hover:border-[#d8fff4]/42 hover:bg-[#17282b]" : "cursor-not-allowed opacity-65"
                         }`}
-                        style={statusStyle(choice)}
+                        style={statusStyle(displayChoice)}
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
-                              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDot(choice)}`} />
+                              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDot(displayChoice)}`} />
                               <span className="truncate text-xs font-black">{choice.title}</span>
+                              {isPetBound && (
+                                <span className="shrink-0 rounded-sm border border-[#55d69e]/24 bg-[#55d69e]/12 px-1.5 py-0.5 text-[9px] font-black text-[#d8fff4]">
+                                  {targetPet ? targetPet.name : "正在跟踪"}
+                                </span>
+                              )}
                             </div>
                             <div className="mt-1 line-clamp-2 text-[11px] leading-4 text-current/70">
                               {choice.summary}
@@ -205,8 +305,11 @@ export function SessionPicker({
                             )}
                           </div>
                           <div className="shrink-0 text-right">
-                            <div className="rounded-sm border border-white/10 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-[0.12em] text-current/70">
-                              {busy ? "binding" : choiceMeta(choice)}
+                            <div
+                              className="rounded-sm border px-2 py-1 text-[10px] font-black"
+                              style={connectionBadgeStyle(displayChoice)}
+                            >
+                              {busy ? busyLabel : connectionLabel(displayChoice)}
                             </div>
                             {choice.todo_total > 0 && (
                               <div className="mt-1 text-[10px] font-bold text-current/60">
@@ -224,7 +327,9 @@ export function SessionPicker({
 
             <div className="flex items-center justify-between gap-2 border-t border-[#89b9c3]/12 pt-3">
               <div className="min-w-0 text-[10px] text-[#9fb4b8]/72">
-                {bindingError ?? (workspaceState?.database_path ? "选择一个对话后，小黑会开始跟踪它。" : "未选择 OpenCode 数据库。")}
+                {bindingError ?? (workspaceState?.database_path
+                  ? `选择一个对话绑定给 ${targetPet?.name ?? "这只猫"}；再次点击已绑定对话可解绑。`
+                  : "未选择 OpenCode 数据库。")}
               </div>
               <div className="flex shrink-0 gap-2">
                 <button
@@ -246,7 +351,7 @@ export function SessionPicker({
                 <button
                   type="button"
                   disabled={!hasBoundSession}
-                  onClick={onOpenOffice}
+                  onClick={() => onOpenOffice(targetPet?.id)}
                   className="rounded-md border border-[#55d69e]/42 bg-[#55d69e]/14 px-3 py-1.5 text-[11px] font-black text-[#d8fff4] hover:border-[#55d69e]/65 hover:bg-[#55d69e]/22 disabled:cursor-not-allowed disabled:border-[#9fb4b8]/16 disabled:bg-[#9fb4b8]/8 disabled:text-[#9fb4b8]/45 transition-colors"
                   style={{
                     backgroundColor: hasBoundSession ? "rgba(85, 214, 158, 0.14)" : "rgba(159, 180, 184, 0.08)",
@@ -254,7 +359,7 @@ export function SessionPicker({
                     color: hasBoundSession ? "#d8fff4" : "rgba(159, 180, 184, 0.45)",
                   }}
                 >
-                  Office
+                  工作台
                 </button>
               </div>
             </div>

@@ -13,7 +13,7 @@ function charVisualWidth(code: number): number {
   return code > 0x2e7f ? 2 : 1;
 }
 
-function textVisualWidth(value: string): number {
+export function textVisualWidth(value: string): number {
   let width = 0;
   for (let index = 0; index < value.length; index += 1) {
     width += charVisualWidth(value.charCodeAt(index));
